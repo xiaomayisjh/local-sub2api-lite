@@ -241,7 +241,7 @@ func (s *UserService) GetProfile(ctx context.Context, userID int64) (*User, erro
 	}
 	normalizeLoadedUserTokenVersion(user)
 	if err := s.hydrateUserAvatar(ctx, user); err != nil {
-		return nil, fmt.Errorf("get user avatar: %w", err)
+		slog.Warn("hydrateUserAvatar: non-fatal error", "error", err)
 	}
 	return user, nil
 }
@@ -959,7 +959,7 @@ func (s *UserService) GetByID(ctx context.Context, id int64) (*User, error) {
 	}
 	normalizeLoadedUserTokenVersion(user)
 	if err := s.hydrateUserAvatar(ctx, user); err != nil {
-		return nil, fmt.Errorf("get user avatar: %w", err)
+		slog.Warn("hydrateUserAvatar: non-fatal error", "error", err)
 	}
 	return user, nil
 }
