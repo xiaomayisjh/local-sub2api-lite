@@ -1,41 +1,25 @@
-// Package repository 提供应用程序的基础设施层组件。
-// 包括数据库连接初始化、ORM 客户端管理、Redis 连接、数据库迁移等核心功能。
 package repository
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"time"
 
 	"sub2api-wails/ent"
+	"sub2api-wails/ent/migrate"
+	_ "sub2api-wails/ent/runtime"
+	"sub2api-wails/ent/user"
 	"sub2api-wails/internal/config"
 	"sub2api-wails/internal/pkg/timezone"
-	"sub2api-wails/migrations"
 
 	"entgo.io/ent/dialect"
 	entsql "entgo.io/ent/dialect/sql"
 	_ "modernc.org/sqlite"
+	"golang.org/x/crypto/bcrypt"
 )
 
-// InitEnt 初始化 Ent ORM 客户端并返回客户端实例和底层的 *sql.DB。
-//
-// 该函数执行以下操作：
-//  1. 初始化全局时区设置，确保时间处理一致性
-//  2. 建立 SQLite 数据库连接
-//  3. 配置 SQLite PRAGMA（WAL 模式、外键约束）
-//  4. 自动执行数据库迁移，确保 schema 与代码同步
-//  5. 创建并返回 Ent 客户端实例
-//
-// 重要提示：调用者必须负责关闭返回的 ent.Client（关闭时会自动关闭底层的 driver/db）。
-//
-// 参数：
-//   - cfg: 应用程序配置，包含数据库连接信息和时区设置
-//
-// 返回：
-//   - *ent.Client: Ent ORM 客户端，用于执行数据库操作
-//   - *sql.DB: 底层的 SQL 数据库连接，可用于直接执行原生 SQL
-//   - error: 初始化过程中的错误
 func InitEnt(cfg *config.Config) (*ent.Client, *sql.DB, error) {
 	if err := timezone.Init(cfg.Timezone); err != nil {
 		return nil, nil, err
@@ -43,31 +27,32 @@ func InitEnt(cfg *config.Config) (*ent.Client, *sql.DB, error) {
 
 	dsn := cfg.Database.DSN()
 
-	drv, err := entsql.Open(dialect.SQLite, dsn)
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	db := drv.DB()
 	applyDBPoolSettings(db, cfg)
 
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		_ = drv.Close()
+		_ = db.Close()
 		return nil, nil, fmt.Errorf("set sqlite WAL mode: %w", err)
 	}
 	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		_ = drv.Close()
+		_ = db.Close()
 		return nil, nil, fmt.Errorf("enable sqlite foreign keys: %w", err)
 	}
 
+	drv := entsql.OpenDB(dialect.SQLite, db)
+	client := ent.NewClient(ent.Driver(drv))
+
 	migrationCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	if err := applyMigrationsFS(migrationCtx, db, migrations.FS); err != nil {
-		_ = drv.Close()
-		return nil, nil, err
-	}
 
-	client := ent.NewClient(ent.Driver(drv))
+	if err := client.Schema.Create(migrationCtx, migrate.WithForeignKeys(true)); err != nil {
+		_ = client.Close()
+		return nil, nil, fmt.Errorf("auto-migrate schema: %w", err)
+	}
 
 	if err := ensureBootstrapSecrets(migrationCtx, client, cfg); err != nil {
 		_ = client.Close()
@@ -92,5 +77,50 @@ func InitEnt(cfg *config.Config) (*ent.Client, *sql.DB, error) {
 		}
 	}
 
+	if err := ensureDefaultAdmin(migrationCtx, client, cfg); err != nil {
+		_ = client.Close()
+		return nil, nil, err
+	}
+
 	return client, db, nil
+}
+
+func ensureDefaultAdmin(ctx context.Context, client *ent.Client, cfg *config.Config) error {
+	count, err := client.User.Query().Where(user.RoleEQ("admin")).Count(ctx)
+	if err != nil {
+		return fmt.Errorf("check admin user: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+
+	email := cfg.Default.AdminEmail
+	password := cfg.Default.AdminPassword
+	if email == "" {
+		email = "admin@sub2api.local"
+	}
+	if password == "" {
+		password = "admin123"
+	}
+
+	hashedBytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("hash admin password: %w", err)
+	}
+
+	_, err = client.User.Create().
+		SetEmail(email).
+		SetPasswordHash(string(hashedBytes)).
+		SetRole("admin").
+		SetStatus("active").
+		SetUsername("admin").
+		SetBalance(0).
+		SetConcurrency(10).
+		Save(ctx)
+	if err != nil {
+		return fmt.Errorf("create admin user: %w", err)
+	}
+
+	log.Printf("Default admin user created: %s", email)
+	return nil
 }

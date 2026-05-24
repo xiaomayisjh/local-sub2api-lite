@@ -33,6 +33,11 @@ func NewApp() *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	go func() {
+		if err := a.StartServer(); err != nil {
+			log.Printf("Failed to start API server: %v", err)
+		}
+	}()
 }
 
 func (a *App) GetServerPort() int {
@@ -189,7 +194,7 @@ billing:
   enabled: false
 
 default:
-  admin_email: "admin@localhost"
+  admin_email: "admin@sub2api.local"
   admin_password: "admin123"
 
 gateway:
