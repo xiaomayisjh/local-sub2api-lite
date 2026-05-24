@@ -2,26 +2,210 @@ package main
 
 import (
 	"context"
+	"embed"
+	"errors"
 	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strconv"
+	"syscall"
+	"time"
+
+	"sub2api-wails/ent/runtime"
+	"sub2api-wails/internal/config"
+	"sub2api-wails/internal/handler"
+	"sub2api-wails/internal/pkg/logger"
+	"sub2api-wails/internal/pkg/redismem"
+	"sub2api-wails/internal/repository"
+	"sub2api-wails/internal/server"
+	"sub2api-wails/internal/service"
+
+	"github.com/gin-gonic/gin"
+	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// App struct
 type App struct {
-	ctx context.Context
+	ctx       context.Context
+	cfg       *config.Config
+	server    *http.Server
+	entClient interface{ Close() error }
 }
 
-// NewApp creates a new App application struct
 func NewApp() *App {
 	return &App{}
 }
 
-// startup is called when the app starts. The context is saved
-// so we can call the runtime methods
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 }
 
-// Greet returns a greeting for the given name
-func (a *App) Greet(name string) string {
-	return fmt.Sprintf("Hello %s, It's show time!", name)
+func (a *App) GetServerPort() int {
+	if a.cfg != nil {
+		return a.cfg.Server.Port
+	}
+	return 8080
+}
+
+func (a *App) GetServerStatus() string {
+	if a.server != nil {
+		return "running"
+	}
+	return "stopped"
+}
+
+func (a *App) StartServer() error {
+	if a.server != nil {
+		return fmt.Errorf("server already running")
+	}
+
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("get executable path: %w", err)
+	}
+	dataDir := filepath.Join(filepath.Dir(exePath), "data")
+	os.MkdirAll(dataDir, 0755)
+
+	configPath := filepath.Join(dataDir, "config.yaml")
+	cfg, err := config.LoadForBootstrap()
+	if err != nil {
+		if err := createDefaultConfig(configPath); err != nil {
+			return fmt.Errorf("create default config: %w", err)
+		}
+		cfg, err = config.LoadForBootstrap()
+		if err != nil {
+			return fmt.Errorf("load config: %w", err)
+		}
+	}
+
+	cfg.Database.Type = "sqlite"
+	cfg.Database.SQLitePath = filepath.Join(dataDir, "sub2api.db")
+	cfg.RunMode = config.RunModeSimple
+
+	if portStr := os.Getenv("SERVER_PORT"); portStr != "" {
+		if p, err := strconv.Atoi(portStr); err == nil {
+			cfg.Server.Port = p
+		}
+	}
+
+	if err := logger.Init(logger.OptionsFromConfig(cfg.Log)); err != nil {
+		return fmt.Errorf("init logger: %w", err)
+	}
+
+	entClient, db, err := repository.InitEnt(cfg)
+	if err != nil {
+		return fmt.Errorf("init database: %w", err)
+	}
+	a.entClient = entClient
+
+	redisStub := repository.NewRedisStub()
+
+	handlers, err := handler.NewHandlers(cfg, entClient, redisStub)
+	if err != nil {
+		entClient.Close()
+		return fmt.Errorf("init handlers: %w", err)
+	}
+
+	r := gin.New()
+	r.Use(gin.Recovery())
+
+	_ = service.NewAPIKeyService(cfg, entClient, redisStub)
+	_ = service.NewSubscriptionService(cfg, entClient, redisStub)
+	_ = service.NewOpsService(cfg, entClient, db, redisStub)
+	_ = service.NewSettingService(cfg, entClient, redisStub)
+
+	server.SetupRouter(r, handlers, nil, nil, nil, nil, nil, nil, nil, cfg, nil)
+
+	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
+	a.cfg = cfg
+
+	a.server = &http.Server{
+		Addr:              addr,
+		Handler:           r,
+		ReadHeaderTimeout: 30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	go func() {
+		if err := a.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("Server error: %v", err)
+		}
+	}()
+
+	log.Printf("API server started on %s", addr)
+	return nil
+}
+
+func (a *App) StopServer() error {
+	if a.server == nil {
+		return fmt.Errorf("server not running")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := a.server.Shutdown(ctx); err != nil {
+		return fmt.Errorf("shutdown server: %w", err)
+	}
+	a.server = nil
+	if a.entClient != nil {
+		a.entClient.Close()
+		a.entClient = nil
+	}
+	return nil
+}
+
+func (a *App) OpenInBrowser() {
+	if a.cfg != nil {
+		url := fmt.Sprintf("http://localhost:%d", a.cfg.Server.Port)
+		wailsRuntime.BrowserOpenURL(a.ctx, url)
+	}
+}
+
+func (a *App) shutdown() {
+	if a.server != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		a.server.Shutdown(ctx)
+	}
+	if a.entClient != nil {
+		a.entClient.Close()
+	}
+}
+
+func createDefaultConfig(path string) error {
+	defaultCfg := `server:
+  host: "0.0.0.0"
+  port: 8080
+  mode: "release"
+
+database:
+  type: sqlite
+  sqlite_path: "sub2api.db"
+
+log:
+  level: "info"
+  format: "json"
+  output:
+    to_stdout: true
+    to_file: false
+
+jwt:
+  secret: "sub2api-wails-local-secret-change-me"
+  expire_hours: 168
+
+run_mode: simple
+timezone: "Asia/Shanghai"
+
+billing:
+  enabled: false
+
+default:
+  admin_email: "admin@localhost"
+  admin_password: "admin123"
+
+gateway:
+  upstream_timeout_seconds: 300
+`
+	return os.WriteFile(path, []byte(defaultCfg), 0644)
 }
