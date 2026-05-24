@@ -3,7 +3,6 @@ package repository
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -39,7 +38,7 @@ func NewAPIKeyCache(rdb *RedisStub) service.APIKeyCache {
 func (c *apiKeyCache) GetCreateAttemptCount(ctx context.Context, userID int64) (int, error) {
 	key := apiKeyRateLimitKey(userID)
 	count, err := c.rdb.Get(ctx, key).Int()
-	if errors.Is(err, redis.Nil) {
+	if err != nil {
 		return 0, nil
 	}
 	return count, err

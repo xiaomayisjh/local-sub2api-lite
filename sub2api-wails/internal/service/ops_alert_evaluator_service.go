@@ -885,7 +885,7 @@ func (s *OpsAlertEvaluatorService) tryAcquireLeaderLock(ctx context.Context, loc
 		ttl = opsAlertEvaluatorLeaderLockTTL
 	}
 
-	ok, err := s.redisClient.SetNX(ctx, key, s.instanceID, ttl)
+	ok, err := s.redisClient.SetNX(ctx, key, s.instanceID, ttl).Result()
 	if err != nil {
 		// Prefer fail-closed to avoid duplicate evaluators stampeding the DB when Redis is flaky.
 		// Single-node deployments can disable the distributed lock via runtime settings.
@@ -901,7 +901,7 @@ func (s *OpsAlertEvaluatorService) tryAcquireLeaderLock(ctx context.Context, loc
 	return func() {
 		ctx2, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		s.redisClient.Del(ctx2, key)
+		s.redisClient.Del(ctx2, key).Err()
 	}, true
 }
 

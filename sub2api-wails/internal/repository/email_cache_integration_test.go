@@ -3,12 +3,12 @@
 package repository
 
 import (
+	"sub2api-wails/internal/pkg/redismem"
 	"errors"
 	"testing"
 	"time"
 
 	"sub2api-wails/internal/service"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
@@ -25,7 +25,7 @@ func (s *EmailCacheSuite) SetupTest() {
 
 func (s *EmailCacheSuite) TestGetVerificationCode_Missing() {
 	_, err := s.cache.GetVerificationCode(s.ctx, "nonexistent@example.com")
-	require.True(s.T(), errors.Is(err, redis.Nil), "expected redis.Nil for missing verification code")
+	require.True(s.T(), errors.Is(err, redismem.Nil), "expected redismem.Nil for missing verification code")
 }
 
 func (s *EmailCacheSuite) TestSetAndGetVerificationCode() {
@@ -69,7 +69,7 @@ func (s *EmailCacheSuite) TestDeleteVerificationCode() {
 
 	// Verify it's gone
 	_, err = s.cache.GetVerificationCode(s.ctx, email)
-	require.True(s.T(), errors.Is(err, redis.Nil), "expected redis.Nil after delete")
+	require.True(s.T(), errors.Is(err, redismem.Nil), "expected redismem.Nil after delete")
 }
 
 func (s *EmailCacheSuite) TestDeleteVerificationCode_NonExistent() {
@@ -84,7 +84,7 @@ func (s *EmailCacheSuite) TestGetVerificationCode_JSONCorruption() {
 
 	_, err := s.cache.GetVerificationCode(s.ctx, "corrupted@example.com")
 	require.Error(s.T(), err, "expected error for corrupted JSON")
-	require.False(s.T(), errors.Is(err, redis.Nil), "expected decoding error, not redis.Nil")
+	require.False(s.T(), errors.Is(err, redismem.Nil), "expected decoding error, not redismem.Nil")
 }
 
 func TestEmailCacheSuite(t *testing.T) {

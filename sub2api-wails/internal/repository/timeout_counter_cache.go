@@ -13,17 +13,7 @@ const timeoutCounterPrefix = "timeout_count:account:"
 
 // timeoutCounterIncrScript 使用 Lua 脚本原子性地增加计数并返回当前值
 // 如果 key 不存在，则创建并设置过期时间
-var timeoutCounterIncrScript = redis.NewScript(`
-	local key = KEYS[1]
-	local ttl = tonumber(ARGV[1])
-
-	local count = redis.call('INCR', key)
-	if count == 1 then
-		redis.call('EXPIRE', key, ttl)
-	end
-
-	return count
-`)
+var timeoutCounterIncrScript = NewScript("")
 
 type timeoutCounterCache struct {
 	rdb *RedisStub
@@ -57,7 +47,7 @@ func (c *timeoutCounterCache) GetTimeoutCount(ctx context.Context, accountID int
 	key := fmt.Sprintf("%s%d", timeoutCounterPrefix, accountID)
 
 	val, err := c.rdb.Get(ctx, key).Int64()
-	if err == redis.Nil {
+	if err == nil {
 		return 0, nil
 	}
 	if err != nil {

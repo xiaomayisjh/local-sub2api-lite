@@ -829,7 +829,7 @@ func (c *OpsMetricsCollector) checkRedis(ctx context.Context) bool {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return c.redisClient.Ping(ctx) == nil
+	return c.redisClient.Ping(ctx).Err() == nil
 }
 
 func (c *OpsMetricsCollector) redisPoolStats() (total int, idle int, ok bool) {
@@ -858,7 +858,7 @@ func (c *OpsMetricsCollector) tryAcquireLeaderLock(ctx context.Context) (func(),
 		ctx = context.Background()
 	}
 
-	ok, err := c.redisClient.SetNX(ctx, opsMetricsCollectorLeaderLockKey, c.instanceID, opsMetricsCollectorLeaderLockTTL)
+	ok, err := c.redisClient.SetNX(ctx, opsMetricsCollectorLeaderLockKey, c.instanceID, opsMetricsCollectorLeaderLockTTL).Result()
 	if err != nil {
 		// Prefer fail-closed to avoid stampeding the database when Redis is flaky.
 		// Fallback to a DB advisory lock when Redis is present but unavailable.
@@ -877,7 +877,7 @@ func (c *OpsMetricsCollector) tryAcquireLeaderLock(ctx context.Context) (func(),
 	release := func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		c.redisClient.Del(ctx, opsMetricsCollectorLeaderLockKey)
+		c.redisClient.Del(ctx, opsMetricsCollectorLeaderLockKey).Err()
 	}
 	return release, true
 }

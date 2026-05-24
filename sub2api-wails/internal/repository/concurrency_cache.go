@@ -1,8 +1,8 @@
 package repository
 
 import (
+	"sub2api-wails/internal/pkg/redismem"
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 
@@ -43,151 +43,35 @@ var (
 	// ARGV[1] = maxConcurrency
 	// ARGV[2] = TTL（秒）
 	// ARGV[3] = requestID
-	acquireScript = redis.NewScript(`
-		local key = KEYS[1]
-		local maxConcurrency = tonumber(ARGV[1])
-		local ttl = tonumber(ARGV[2])
-		local requestID = ARGV[3]
-
-		-- 使用 Redis 服务器时间，确保多实例时钟一致
-		local timeResult = redis.call('TIME')
-		local now = tonumber(timeResult[1])
-		local expireBefore = now - ttl
-
-		-- 清理过期槽位
-		redis.call('ZREMRANGEBYSCORE', key, '-inf', expireBefore)
-
-		-- 检查是否已存在（支持重试场景刷新时间戳）
-		local exists = redis.call('ZSCORE', key, requestID)
-		if exists ~= false then
-			redis.call('ZADD', key, now, requestID)
-			redis.call('EXPIRE', key, ttl)
-			return 1
-		end
-
-		-- 检查是否达到并发上限
-		local count = redis.call('ZCARD', key)
-		if count < maxConcurrency then
-			redis.call('ZADD', key, now, requestID)
-			redis.call('EXPIRE', key, ttl)
-			return 1
-		end
-
-		return 0
-	`)
+	acquireScript = NewScript("")
 
 	// getCountScript 统计有序集合中的槽位数量并清理过期条目
 	// 使用 Redis TIME 命令获取服务器时间
 	// KEYS[1] = 有序集合键
 	// ARGV[1] = TTL（秒）
-	getCountScript = redis.NewScript(`
-		local key = KEYS[1]
-		local ttl = tonumber(ARGV[1])
-
-		-- 使用 Redis 服务器时间
-		local timeResult = redis.call('TIME')
-		local now = tonumber(timeResult[1])
-		local expireBefore = now - ttl
-
-		redis.call('ZREMRANGEBYSCORE', key, '-inf', expireBefore)
-		return redis.call('ZCARD', key)
-	`)
+	getCountScript = NewScript("")
 
 	// incrementWaitScript - refreshes TTL on each increment to keep queue depth accurate
 	// KEYS[1] = wait queue key
 	// ARGV[1] = maxWait
 	// ARGV[2] = TTL in seconds
-	incrementWaitScript = redis.NewScript(`
-		local current = redis.call('GET', KEYS[1])
-		if current == false then
-			current = 0
-		else
-			current = tonumber(current)
-		end
-
-		if current >= tonumber(ARGV[1]) then
-			return 0
-		end
-
-		local newVal = redis.call('INCR', KEYS[1])
-
-		-- Refresh TTL so long-running traffic doesn't expire active queue counters.
-		redis.call('EXPIRE', KEYS[1], ARGV[2])
-
-			return 1
-		`)
+	incrementWaitScript = NewScript("")
 
 	// incrementAccountWaitScript - account-level wait queue count (refresh TTL on each increment)
-	incrementAccountWaitScript = redis.NewScript(`
-			local current = redis.call('GET', KEYS[1])
-			if current == false then
-				current = 0
-			else
-				current = tonumber(current)
-			end
-
-			if current >= tonumber(ARGV[1]) then
-				return 0
-			end
-
-			local newVal = redis.call('INCR', KEYS[1])
-
-			-- Refresh TTL so long-running traffic doesn't expire active queue counters.
-			redis.call('EXPIRE', KEYS[1], ARGV[2])
-
-			return 1
-		`)
+	incrementAccountWaitScript = NewScript("")
 
 	// decrementWaitScript - same as before
-	decrementWaitScript = redis.NewScript(`
-			local current = redis.call('GET', KEYS[1])
-			if current ~= false and tonumber(current) > 0 then
-				redis.call('DECR', KEYS[1])
-			end
-			return 1
-		`)
+	decrementWaitScript = NewScript("")
 
 	// cleanupExpiredSlotsScript 清理单个账号/用户有序集合中过期槽位
 	// KEYS[1] = 有序集合键
 	// ARGV[1] = TTL（秒）
-	cleanupExpiredSlotsScript = redis.NewScript(`
-		local key = KEYS[1]
-		local ttl = tonumber(ARGV[1])
-		local timeResult = redis.call('TIME')
-		local now = tonumber(timeResult[1])
-		local expireBefore = now - ttl
-		redis.call('ZREMRANGEBYSCORE', key, '-inf', expireBefore)
-		if redis.call('ZCARD', key) == 0 then
-			redis.call('DEL', key)
-		else
-			redis.call('EXPIRE', key, ttl)
-		end
-		return 1
-	`)
+	cleanupExpiredSlotsScript = NewScript("")
 
 	// startupCleanupScript 清理非当前进程前缀的槽位成员。
 	// KEYS 是有序集合键列表，ARGV[1] 是当前进程前缀，ARGV[2] 是槽位 TTL。
 	// 遍历每个 KEYS[i]，移除前缀不匹配的成员，清空后删 key，否则刷新 EXPIRE。
-	startupCleanupScript = redis.NewScript(`
-		local activePrefix = ARGV[1]
-		local slotTTL = tonumber(ARGV[2])
-		local removed = 0
-		for i = 1, #KEYS do
-			local key = KEYS[i]
-			local members = redis.call('ZRANGE', key, 0, -1)
-			for _, member in ipairs(members) do
-				if string.sub(member, 1, string.len(activePrefix)) ~= activePrefix then
-					removed = removed + redis.call('ZREM', key, member)
-				end
-			end
-			if redis.call('ZCARD', key) == 0 then
-				redis.call('DEL', key)
-			else
-				redis.call('EXPIRE', key, slotTTL)
-			end
-		end
-		return removed
-	`)
+	startupCleanupScript = NewScript("")
 )
 
 type concurrencyCache struct {
@@ -271,7 +155,7 @@ func (c *concurrencyCache) GetAccountConcurrencyBatch(ctx context.Context, accou
 	pipe := c.rdb.Pipeline()
 	type accountCmd struct {
 		accountID int64
-		zcardCmd  *redis.IntCmd
+		zcardCmd  *redismem.IntCmd
 	}
 	cmds := make([]accountCmd, 0, len(accountIDs))
 	for _, accountID := range accountIDs {
@@ -283,7 +167,7 @@ func (c *concurrencyCache) GetAccountConcurrencyBatch(ctx context.Context, accou
 		})
 	}
 
-	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
+	if _, err := pipe.Exec(ctx); err != nil  {
 		return nil, fmt.Errorf("pipeline exec: %w", err)
 	}
 
@@ -358,10 +242,10 @@ func (c *concurrencyCache) DecrementAccountWaitCount(ctx context.Context, accoun
 func (c *concurrencyCache) GetAccountWaitingCount(ctx context.Context, accountID int64) (int, error) {
 	key := accountWaitKey(accountID)
 	val, err := c.rdb.Get(ctx, key).Int()
-	if err != nil && !errors.Is(err, redis.Nil) {
+	if err != nil  {
 		return 0, err
 	}
-	if errors.Is(err, redis.Nil) {
+	if err != nil {
 		return 0, nil
 	}
 	return val, nil
@@ -385,8 +269,8 @@ func (c *concurrencyCache) GetAccountsLoadBatch(ctx context.Context, accounts []
 	type accountCmds struct {
 		id             int64
 		maxConcurrency int
-		zcardCmd       *redis.IntCmd
-		getCmd         *redis.StringCmd
+		zcardCmd       *redismem.IntCmd
+		getCmd         *redismem.StringCmd
 	}
 	cmds := make([]accountCmds, 0, len(accounts))
 	for _, acc := range accounts {
@@ -402,7 +286,7 @@ func (c *concurrencyCache) GetAccountsLoadBatch(ctx context.Context, accounts []
 		cmds = append(cmds, ac)
 	}
 
-	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
+	if _, err := pipe.Exec(ctx); err != nil  {
 		return nil, fmt.Errorf("pipeline exec: %w", err)
 	}
 
@@ -445,8 +329,8 @@ func (c *concurrencyCache) GetUsersLoadBatch(ctx context.Context, users []servic
 	type userCmds struct {
 		id             int64
 		maxConcurrency int
-		zcardCmd       *redis.IntCmd
-		getCmd         *redis.StringCmd
+		zcardCmd       *redismem.IntCmd
+		getCmd         *redismem.StringCmd
 	}
 	cmds := make([]userCmds, 0, len(users))
 	for _, u := range users {
@@ -462,7 +346,7 @@ func (c *concurrencyCache) GetUsersLoadBatch(ctx context.Context, users []servic
 		cmds = append(cmds, uc)
 	}
 
-	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
+	if _, err := pipe.Exec(ctx); err != nil  {
 		return nil, fmt.Errorf("pipeline exec: %w", err)
 	}
 

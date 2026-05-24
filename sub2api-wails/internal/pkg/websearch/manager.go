@@ -237,7 +237,7 @@ func (m *Manager) markProxyUnavailable(ctx context.Context, cfg ProviderConfig, 
 		return
 	}
 	key := fmt.Sprintf(proxyUnavailableKey, proxyID)
-	if err := m.redis.Set(ctx, key, "1", proxyUnavailableTTL); err != nil {
+	if err := m.redis.Set(ctx, key, "1", proxyUnavailableTTL).Err(); err != nil {
 		slog.Warn("websearch: failed to mark proxy unavailable",
 			"proxy_id", proxyID, "error", err)
 	}
@@ -249,7 +249,7 @@ func (m *Manager) isProxyAvailable(ctx context.Context, proxyID int64) bool {
 		return true
 	}
 	key := fmt.Sprintf(proxyUnavailableKey, proxyID)
-	val, err := m.redis.Get(ctx, key)
+	val, err := m.redis.Get(ctx, key).Result()
 	if err != nil {
 		return true // Redis error → assume available
 	}
@@ -314,7 +314,7 @@ func (m *Manager) tryReserveQuota(ctx context.Context, cfg ProviderConfig) (bool
 		return true, false
 	}
 	if newVal > cfg.QuotaLimit {
-		if _, decrErr := m.redis.Decr(ctx, key); decrErr != nil {
+		if _, decrErr := m.redis.Decr(ctx, key).Result(); decrErr != nil {
 			slog.Warn("websearch: quota over-limit DECR failed",
 				"provider", cfg.Type, "error", decrErr)
 		}
@@ -330,7 +330,7 @@ func (m *Manager) rollbackQuota(ctx context.Context, cfg ProviderConfig) {
 		return
 	}
 	key := quotaRedisKey(cfg.Type)
-	if _, err := m.redis.Decr(ctx, key); err != nil {
+	if _, err := m.redis.Decr(ctx, key).Result(); err != nil {
 		slog.Warn("websearch: quota rollback DECR failed",
 			"provider", cfg.Type, "error", err)
 	}
@@ -442,7 +442,7 @@ func (m *Manager) ResetUsage(ctx context.Context, providerType string) error {
 		return nil
 	}
 	key := quotaRedisKey(providerType)
-	return m.redis.Del(ctx, key)
+	return m.redis.Del(ctx, key).Err()
 }
 
 // --- Provider factory ---
@@ -461,7 +461,7 @@ func (m *Manager) buildProvider(cfg ProviderConfig, client *http.Client) Provide
 }
 
 func (m *Manager) redisGetInt64(ctx context.Context, key string) (int64, error) {
-	val, err := m.redis.Get(ctx, key)
+	val, err := m.redis.Get(ctx, key).Result()
 	if err != nil {
 		return 0, err
 	}
@@ -474,7 +474,7 @@ func (m *Manager) redisGetInt64(ctx context.Context, key string) (int64, error) 
 }
 
 func (m *Manager) quotaIncr(ctx context.Context, key string, ttlSec int64) (int64, error) {
-	newVal, err := m.redis.Incr(ctx, key)
+	newVal, err := m.redis.Incr(ctx, key).Result()
 	if err != nil {
 		return 0, err
 	}

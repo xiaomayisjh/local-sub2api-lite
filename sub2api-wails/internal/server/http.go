@@ -2,6 +2,7 @@
 package server
 
 import (
+	"sub2api-wails/internal/pkg/redismem"
 	"context"
 	"log"
 	"log/slog"
@@ -37,7 +38,7 @@ func ProvideRouter(
 	subscriptionService *service.SubscriptionService,
 	opsService *service.OpsService,
 	settingService *service.SettingService,
-	redisClient *RedisStub,
+	redisClient *redismem.RedisStub,
 ) *gin.Engine {
 	if cfg.Server.Mode == "release" {
 		gin.SetMode(gin.ReleaseMode)

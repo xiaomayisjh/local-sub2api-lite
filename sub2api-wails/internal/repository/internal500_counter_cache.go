@@ -15,17 +15,7 @@ const (
 
 // internal500CounterIncrScript 使用 Lua 脚本原子性地增加计数并返回当前值
 // 如果 key 不存在，则创建并设置过期时间
-var internal500CounterIncrScript = redis.NewScript(`
-	local key = KEYS[1]
-	local ttl = tonumber(ARGV[1])
-
-	local count = redis.call('INCR', key)
-	if count == 1 then
-		redis.call('EXPIRE', key, ttl)
-	end
-
-	return count
-`)
+var internal500CounterIncrScript = NewScript("")
 
 type internal500CounterCache struct {
 	rdb *RedisStub

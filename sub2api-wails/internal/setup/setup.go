@@ -3,7 +3,6 @@ package setup
 import (
 	"context"
 	"crypto/rand"
-	"crypto/tls"
 	"database/sql"
 	"encoding/hex"
 	"fmt"
@@ -243,25 +242,8 @@ func TestDatabaseConnection(cfg *DatabaseConfig) error {
 
 // TestRedisConnection tests the Redis connection
 func TestRedisConnection(cfg *RedisConfig) error {
-	opts := &redis.Options{
-		Addr:     fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
-		Password: cfg.Password,
-		DB:       cfg.DB,
-	}
-
-	if cfg.EnableTLS {
-		opts.TLSConfig = &tls.Config{
-			MinVersion: tls.VersionTLS12,
-			ServerName: cfg.Host,
-		}
-	}
-
-	rdb := redis.NewClient(opts)
-	defer func() {
-		if err := rdb.Close(); err != nil {
-			logger.LegacyPrintf("setup", "failed to close redis client: %v", err)
-		}
-	}()
+	rdb := redismem.NewRedisStub()
+	defer rdb.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

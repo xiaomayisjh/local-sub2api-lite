@@ -3,11 +3,11 @@
 package repository
 
 import (
+	"sub2api-wails/internal/pkg/redismem"
 	"errors"
 	"testing"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
@@ -24,7 +24,7 @@ func (s *UpdateCacheSuite) SetupTest() {
 
 func (s *UpdateCacheSuite) TestGetUpdateInfo_Missing() {
 	_, err := s.cache.GetUpdateInfo(s.ctx)
-	require.True(s.T(), errors.Is(err, redis.Nil), "expected redis.Nil for missing update info")
+	require.True(s.T(), errors.Is(err, redismem.Nil), "expected redismem.Nil for missing update info")
 }
 
 func (s *UpdateCacheSuite) TestSetAndGetUpdateInfo() {

@@ -1,8 +1,8 @@
 package repository
 
 import (
+	"sub2api-wails/internal/pkg/redismem"
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -21,39 +21,13 @@ const (
 )
 
 // Lua 脚本：原子获取串行锁（SET NX PX + 重入安全）
-var acquireLockScript = redis.NewScript(`
-local cur = redis.call('GET', KEYS[1])
-if cur == ARGV[1] then
-    redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[2]))
-    return 1
-end
-if cur ~= false then return 0 end
-redis.call('SET', KEYS[1], ARGV[1], 'PX', tonumber(ARGV[2]))
-return 1
-`)
+var acquireLockScript = NewScript("")
 
 // Lua 脚本：原子释放锁 + 记录完成时间（使用 Redis TIME 避免时钟偏差）
-var releaseLockScript = redis.NewScript(`
-local cur = redis.call('GET', KEYS[1])
-if cur == ARGV[1] then
-    redis.call('DEL', KEYS[1])
-    local t = redis.call('TIME')
-    local ms = tonumber(t[1])*1000 + math.floor(tonumber(t[2])/1000)
-    redis.call('SET', KEYS[2], ms, 'EX', 60)
-    return 1
-end
-return 0
-`)
+var releaseLockScript = NewScript("")
 
 // Lua 脚本：原子清理孤儿锁（仅在 PTTL == -1 时删除，避免 TOCTOU 竞态误删合法锁）
-var forceReleaseLockScript = redis.NewScript(`
-local pttl = redis.call('PTTL', KEYS[1])
-if pttl == -1 then
-    redis.call('DEL', KEYS[1])
-    return 1
-end
-return 0
-`)
+var forceReleaseLockScript = NewScript("")
 
 type userMsgQueueCache struct {
 	rdb *RedisStub
@@ -104,10 +78,10 @@ func (c *userMsgQueueCache) ReleaseLock(ctx context.Context, accountID int64, re
 func (c *userMsgQueueCache) GetLastCompletedMs(ctx context.Context, accountID int64) (int64, error) {
 	key := umqLastKey(accountID)
 	val, err := c.rdb.Get(ctx, key).Result()
-	if errors.Is(err, redis.Nil) {
-		return 0, nil
-	}
 	if err != nil {
+		if err == redismem.Nil {
+			return 0, nil
+		}
 		return 0, fmt.Errorf("umq get last completed: %w", err)
 	}
 	ms, err := strconv.ParseInt(val, 10, 64)
@@ -121,7 +95,7 @@ func (c *userMsgQueueCache) GetLastCompletedMs(ctx context.Context, accountID in
 func (c *userMsgQueueCache) ForceReleaseLock(ctx context.Context, accountID int64) error {
 	key := umqLockKey(accountID)
 	_, err := forceReleaseLockScript.Run(ctx, c.rdb, []string{key}).Result()
-	if err != nil && !errors.Is(err, redis.Nil) {
+	if err != nil && err != redismem.Nil {
 		return fmt.Errorf("umq force release lock: %w", err)
 	}
 	return nil

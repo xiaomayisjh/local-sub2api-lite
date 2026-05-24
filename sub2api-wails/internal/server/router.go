@@ -1,6 +1,7 @@
 package server
 
 import (
+	"sub2api-wails/internal/pkg/redismem"
 	"context"
 	"log"
 	"sync/atomic"
@@ -31,7 +32,7 @@ func SetupRouter(
 	opsService *service.OpsService,
 	settingService *service.SettingService,
 	cfg *config.Config,
-	redisClient *RedisStub,
+	redisClient *redismem.RedisStub,
 ) *gin.Engine {
 	// 缓存 iframe 页面的 origin 列表，用于动态注入 CSP frame-src
 	var cachedFrameOrigins atomic.Pointer[[]string]
@@ -98,7 +99,7 @@ func registerRoutes(
 	opsService *service.OpsService,
 	settingService *service.SettingService,
 	cfg *config.Config,
-	redisClient *RedisStub,
+	redisClient *redismem.RedisStub,
 ) {
 	// 通用路由（健康检查、状态等）
 	routes.RegisterCommonRoutes(r)

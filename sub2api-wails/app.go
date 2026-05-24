@@ -2,26 +2,19 @@ package main
 
 import (
 	"context"
-	"embed"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strconv"
-	"syscall"
 	"time"
 
-	"sub2api-wails/ent/runtime"
 	"sub2api-wails/internal/config"
-	"sub2api-wails/internal/handler"
 	"sub2api-wails/internal/pkg/logger"
 	"sub2api-wails/internal/pkg/redismem"
 	"sub2api-wails/internal/repository"
 	"sub2api-wails/internal/server"
-	"sub2api-wails/internal/service"
 
 	"github.com/gin-gonic/gin"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -100,23 +93,17 @@ func (a *App) StartServer() error {
 	}
 	a.entClient = entClient
 
-	redisStub := repository.NewRedisStub()
-
-	handlers, err := handler.NewHandlers(cfg, entClient, redisStub)
-	if err != nil {
-		entClient.Close()
-		return fmt.Errorf("init handlers: %w", err)
-	}
+	redisStub := redismem.NewRedisStub()
+	_ = redisStub
 
 	r := gin.New()
 	r.Use(gin.Recovery())
 
-	_ = service.NewAPIKeyService(cfg, entClient, redisStub)
-	_ = service.NewSubscriptionService(cfg, entClient, redisStub)
-	_ = service.NewOpsService(cfg, entClient, db, redisStub)
-	_ = service.NewSettingService(cfg, entClient, redisStub)
-
-	server.SetupRouter(r, handlers, nil, nil, nil, nil, nil, nil, nil, cfg, nil)
+	srv, err := server.Initialize(r, cfg, entClient, db)
+	if err != nil {
+		entClient.Close()
+		return fmt.Errorf("init server: %w", err)
+	}
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	a.cfg = cfg
@@ -129,12 +116,13 @@ func (a *App) StartServer() error {
 	}
 
 	go func() {
-		if err := a.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := a.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("Server error: %v", err)
 		}
 	}()
 
 	log.Printf("API server started on %s", addr)
+	_ = srv
 	return nil
 }
 

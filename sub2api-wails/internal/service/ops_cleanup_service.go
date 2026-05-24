@@ -342,13 +342,13 @@ func (s *OpsCleanupService) tryAcquireLeaderLock(ctx context.Context) (func(), b
 	// Prefer Redis leader lock when available, but avoid stampeding the DB when Redis is flaky by
 	// falling back to a DB advisory lock.
 	if s.redisClient != nil {
-		ok, err := s.redisClient.SetNX(ctx, key, s.instanceID, ttl)
+		ok, err := s.redisClient.SetNX(ctx, key, s.instanceID, ttl).Result()
 		if err == nil {
 			if !ok {
 				return nil, false
 			}
 			return func() {
-				s.redisClient.Del(ctx, key)
+				s.redisClient.Del(ctx, key).Err()
 			}, true
 		}
 		// Redis error: fall back to DB advisory lock.

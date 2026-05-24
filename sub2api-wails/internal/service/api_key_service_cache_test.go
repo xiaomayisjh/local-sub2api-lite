@@ -12,7 +12,6 @@ import (
 
 	"sub2api-wails/internal/config"
 	"sub2api-wails/internal/pkg/pagination"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
 

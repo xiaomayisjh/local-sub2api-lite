@@ -45,7 +45,7 @@ func (c *errorPassthroughCache) Get(ctx context.Context) ([]*model.ErrorPassthro
 	// 从 Redis 获取
 	data, err := c.rdb.Get(ctx, errorPassthroughCacheKey).Bytes()
 	if err != nil {
-		if err != redis.Nil {
+		if err != nil {
 			log.Printf("[ErrorPassthroughCache] Failed to get from Redis: %v", err)
 		}
 		return nil, false

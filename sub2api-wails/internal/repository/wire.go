@@ -110,7 +110,7 @@ var ProviderSet = wire.NewSet(
 	NewDashboardCache,
 	NewEmailCache,
 	NewIdentityCache,
-	NewRedeemCache,
+	// NewRedeemCache removed (payment system disabled),
 	NewUpdateCache,
 	NewGeminiTokenCache,
 	ProvideSchedulerCache,

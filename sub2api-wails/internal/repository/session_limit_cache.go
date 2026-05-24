@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"sub2api-wails/internal/pkg/redismem"
 	"context"
 	"fmt"
 	"log"
@@ -41,106 +42,24 @@ var (
 	// ARGV[2] = idleTimeout（秒）
 	// ARGV[3] = sessionUUID
 	// 返回: 1 = 允许, 0 = 拒绝
-	registerSessionScript = redis.NewScript(`
-		local key = KEYS[1]
-		local maxSessions = tonumber(ARGV[1])
-		local idleTimeout = tonumber(ARGV[2])
-		local sessionUUID = ARGV[3]
-
-		-- 使用 Redis 服务器时间，确保多实例时钟一致
-		local timeResult = redis.call('TIME')
-		local now = tonumber(timeResult[1])
-		local expireBefore = now - idleTimeout
-
-		-- 清理过期会话
-		redis.call('ZREMRANGEBYSCORE', key, '-inf', expireBefore)
-
-		-- 检查会话是否已存在（支持刷新时间戳）
-		local exists = redis.call('ZSCORE', key, sessionUUID)
-		if exists ~= false then
-			-- 会话已存在，刷新时间戳
-			redis.call('ZADD', key, now, sessionUUID)
-			redis.call('EXPIRE', key, idleTimeout + 60)
-			return 1
-		end
-
-		-- 检查是否达到会话数量上限
-		local count = redis.call('ZCARD', key)
-		if count < maxSessions then
-			-- 未达上限，添加新会话
-			redis.call('ZADD', key, now, sessionUUID)
-			redis.call('EXPIRE', key, idleTimeout + 60)
-			return 1
-		end
-
-		-- 达到上限，拒绝新会话
-		return 0
-	`)
+	registerSessionScript = NewScript("")
 
 	// refreshSessionScript 刷新会话时间戳
 	// KEYS[1] = session_limit:account:{accountID}
 	// ARGV[1] = idleTimeout（秒）
 	// ARGV[2] = sessionUUID
-	refreshSessionScript = redis.NewScript(`
-		local key = KEYS[1]
-		local idleTimeout = tonumber(ARGV[1])
-		local sessionUUID = ARGV[2]
-
-		local timeResult = redis.call('TIME')
-		local now = tonumber(timeResult[1])
-
-		-- 检查会话是否存在
-		local exists = redis.call('ZSCORE', key, sessionUUID)
-		if exists ~= false then
-			redis.call('ZADD', key, now, sessionUUID)
-			redis.call('EXPIRE', key, idleTimeout + 60)
-		end
-		return 1
-	`)
+	refreshSessionScript = NewScript("")
 
 	// getActiveSessionCountScript 获取活跃会话数
 	// KEYS[1] = session_limit:account:{accountID}
 	// ARGV[1] = idleTimeout（秒）
-	getActiveSessionCountScript = redis.NewScript(`
-		local key = KEYS[1]
-		local idleTimeout = tonumber(ARGV[1])
-
-		local timeResult = redis.call('TIME')
-		local now = tonumber(timeResult[1])
-		local expireBefore = now - idleTimeout
-
-		-- 清理过期会话
-		redis.call('ZREMRANGEBYSCORE', key, '-inf', expireBefore)
-
-		return redis.call('ZCARD', key)
-	`)
+	getActiveSessionCountScript = NewScript("")
 
 	// isSessionActiveScript 检查会话是否活跃
 	// KEYS[1] = session_limit:account:{accountID}
 	// ARGV[1] = idleTimeout（秒）
 	// ARGV[2] = sessionUUID
-	isSessionActiveScript = redis.NewScript(`
-		local key = KEYS[1]
-		local idleTimeout = tonumber(ARGV[1])
-		local sessionUUID = ARGV[2]
-
-		local timeResult = redis.call('TIME')
-		local now = tonumber(timeResult[1])
-		local expireBefore = now - idleTimeout
-
-		-- 获取会话的时间戳
-		local score = redis.call('ZSCORE', key, sessionUUID)
-		if score == false then
-			return 0
-		end
-
-		-- 检查是否过期
-		if tonumber(score) <= expireBefore then
-			return 0
-		end
-
-		return 1
-	`)
+	isSessionActiveScript = NewScript("")
 )
 
 type sessionLimitCache struct {
@@ -157,7 +76,7 @@ func NewSessionLimitCache(rdb *RedisStub, defaultIdleTimeoutMinutes int) service
 
 	// 预加载 Lua 脚本到 Redis，避免 Pipeline 中出现 NOSCRIPT 错误
 	ctx := context.Background()
-	scripts := []*redis.Script{
+	scripts := []*redismem.Script{
 		registerSessionScript,
 		refreshSessionScript,
 		getActiveSessionCountScript,
@@ -243,7 +162,7 @@ func (c *sessionLimitCache) GetActiveSessionCountBatch(ctx context.Context, acco
 	// 使用 pipeline 批量执行
 	pipe := c.rdb.Pipeline()
 
-	cmds := make(map[int64]*redis.Cmd, len(accountIDs))
+	cmds := make(map[int64]*redismem.Cmd, len(accountIDs))
 	for _, accountID := range accountIDs {
 		key := sessionLimitKey(accountID)
 		// 使用各账号自己的 idleTimeout，如果没有则用默认值
@@ -291,7 +210,7 @@ func (c *sessionLimitCache) IsSessionActive(ctx context.Context, accountID int64
 func (c *sessionLimitCache) GetWindowCost(ctx context.Context, accountID int64) (float64, bool, error) {
 	key := windowCostKey(accountID)
 	val, err := c.rdb.Get(ctx, key).Float64()
-	if err == redis.Nil {
+	if err == nil {
 		return 0, false, nil // 缓存未命中
 	}
 	if err != nil {

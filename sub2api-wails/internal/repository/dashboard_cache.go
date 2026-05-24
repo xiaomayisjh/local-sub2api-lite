@@ -34,7 +34,7 @@ func NewDashboardCache(rdb *RedisStub, cfg *config.Config) service.DashboardStat
 func (c *dashboardCache) GetDashboardStats(ctx context.Context) (string, error) {
 	val, err := c.rdb.Get(ctx, c.buildKey()).Result()
 	if err != nil {
-		if err == redis.Nil {
+		if err == nil {
 			return "", service.ErrDashboardStatsCacheMiss
 		}
 		return "", err

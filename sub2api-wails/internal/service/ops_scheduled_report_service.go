@@ -658,7 +658,7 @@ func (s *OpsScheduledReportService) tryAcquireLeaderLock(ctx context.Context) (f
 		ttl = 5 * time.Minute
 	}
 
-	ok, err := s.redisClient.SetNX(ctx, key, s.instanceID, ttl)
+	ok, err := s.redisClient.SetNX(ctx, key, s.instanceID, ttl).Result()
 	if err != nil {
 		// Prefer fail-closed to avoid duplicate report sends when Redis is flaky.
 		log.Printf("[OpsScheduledReport] leader lock SetNX failed; skipping this cycle: %v", err)
@@ -668,7 +668,7 @@ func (s *OpsScheduledReportService) tryAcquireLeaderLock(ctx context.Context) (f
 		return nil, false
 	}
 	return func() {
-		s.redisClient.Del(ctx, key)
+		s.redisClient.Del(ctx, key).Err()
 	}, true
 }
 
@@ -682,7 +682,7 @@ func (s *OpsScheduledReportService) getLastRunAt(ctx context.Context, reportType
 	}
 	key := opsScheduledReportLastRunKeyPrefix + kind
 
-	raw, err := s.redisClient.Get(ctx, key)
+	raw, err := s.redisClient.Get(ctx, key).Result()
 	if err != nil || strings.TrimSpace(raw) == "" {
 		return time.Time{}
 	}

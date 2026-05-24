@@ -5,6 +5,7 @@ import (
 
 	"sub2api-wails/internal/handler"
 	"sub2api-wails/internal/middleware"
+	"sub2api-wails/internal/pkg/redismem"
 	servermiddleware "sub2api-wails/internal/server/middleware"
 	"sub2api-wails/internal/service"
 
@@ -17,7 +18,7 @@ func RegisterAuthRoutes(
 	v1 *gin.RouterGroup,
 	h *handler.Handlers,
 	jwtAuth servermiddleware.JWTAuthMiddleware,
-	redisClient *RedisStub,
+	redisClient *redismem.RedisStub,
 	settingService *service.SettingService,
 ) {
 	// 创建速率限制器

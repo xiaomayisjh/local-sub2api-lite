@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"sub2api-wails/internal/pkg/redismem"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -45,28 +46,7 @@ var (
 	// ARGV[4] = 宽限期 TTL 秒数
 	//
 	// 返回 1 = 已激活, 0 = 版本过旧未激活
-	activateSnapshotScript = redis.NewScript(`
-local currentActive = redis.call('GET', KEYS[1])
-local newVersion = tonumber(ARGV[1])
-
-if currentActive ~= false then
-	local curVersion = tonumber(currentActive)
-	if curVersion and newVersion < curVersion then
-		redis.call('DEL', KEYS[4])
-		return 0
-	end
-end
-
-redis.call('SET', KEYS[1], ARGV[1])
-redis.call('SET', KEYS[2], '1')
-redis.call('SADD', KEYS[3], ARGV[2])
-
-if currentActive ~= false and currentActive ~= ARGV[1] then
-	redis.call('EXPIRE', ARGV[3] .. currentActive, tonumber(ARGV[4]))
-end
-
-return 1
-`)
+	activateSnapshotScript = NewScript("")
 )
 
 type schedulerCache struct {
@@ -96,10 +76,10 @@ func newSchedulerCacheWithChunkSizes(rdb *RedisStub, mgetChunkSize, writeChunkSi
 func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.SchedulerBucket) ([]*service.Account, bool, error) {
 	readyKey := schedulerBucketKey(schedulerReadyPrefix, bucket)
 	readyVal, err := c.rdb.Get(ctx, readyKey).Result()
-	if err == redis.Nil {
-		return nil, false, nil
-	}
 	if err != nil {
+		if err == redismem.Nil {
+			return nil, false, nil
+		}
 		return nil, false, err
 	}
 	if readyVal != "1" {
@@ -108,10 +88,10 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 
 	activeKey := schedulerBucketKey(schedulerActivePrefix, bucket)
 	activeVal, err := c.rdb.Get(ctx, activeKey).Result()
-	if err == redis.Nil {
-		return nil, false, nil
-	}
 	if err != nil {
+		if err == redismem.Nil {
+			return nil, false, nil
+		}
 		return nil, false, err
 	}
 
@@ -169,9 +149,9 @@ func (c *schedulerCache) SetSnapshot(ctx context.Context, bucket service.Schedul
 
 	if len(accounts) > 0 {
 		// 使用序号作为 score，保持数据库返回的排序语义。
-		members := make([]redis.Z, 0, len(accounts))
+		members := make([]redismem.Z, 0, len(accounts))
 		for idx, account := range accounts {
-			members = append(members, redis.Z{
+			members = append(members, redismem.Z{
 				Score:  float64(idx),
 				Member: strconv.FormatInt(account.ID, 10),
 			})
@@ -211,10 +191,10 @@ func (c *schedulerCache) SetSnapshot(ctx context.Context, bucket service.Schedul
 func (c *schedulerCache) GetAccount(ctx context.Context, accountID int64) (*service.Account, error) {
 	key := schedulerAccountKey(strconv.FormatInt(accountID, 10))
 	val, err := c.rdb.Get(ctx, key).Result()
-	if err == redis.Nil {
-		return nil, nil
-	}
 	if err != nil {
+		if err == redismem.Nil {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return decodeCachedAccount(val)
@@ -305,10 +285,10 @@ func (c *schedulerCache) ListBuckets(ctx context.Context) ([]service.SchedulerBu
 
 func (c *schedulerCache) GetOutboxWatermark(ctx context.Context) (int64, error) {
 	val, err := c.rdb.Get(ctx, schedulerOutboxWatermarkKey).Result()
-	if err == redis.Nil {
-		return 0, nil
-	}
 	if err != nil {
+		if err == redismem.Nil {
+			return 0, nil
+		}
 		return 0, err
 	}
 	id, err := strconv.ParseInt(val, 10, 64)

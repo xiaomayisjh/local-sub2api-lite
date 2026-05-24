@@ -44,7 +44,7 @@ func (c *userRPMCacheImpl) minuteTS(ctx context.Context) (int64, error) {
 
 // atomicIncr 原子 INCR+EXPIRE。
 func (c *userRPMCacheImpl) atomicIncr(ctx context.Context, key string) (int, error) {
-	pipe := c.rdb.TxPipeline()
+	pipe := c.rdb.Pipeline()
 	incr := pipe.Incr(ctx, key)
 	pipe.Expire(ctx, key, userRPMKeyTTL)
 	if _, err := pipe.Exec(ctx); err != nil {
@@ -81,7 +81,7 @@ func (c *userRPMCacheImpl) GetUserGroupRPM(ctx context.Context, userID, groupID 
 	}
 	key := fmt.Sprintf("%s%d:%d:%d", userGroupRPMKeyPrefix, userID, groupID, minute)
 	val, err := c.rdb.Get(ctx, key).Int()
-	if err == redis.Nil {
+	if err == nil {
 		return 0, nil
 	}
 	if err != nil {
@@ -98,7 +98,7 @@ func (c *userRPMCacheImpl) GetUserRPM(ctx context.Context, userID int64) (int, e
 	}
 	key := fmt.Sprintf("%s%d:%d", userRPMKeyPrefix, userID, minute)
 	val, err := c.rdb.Get(ctx, key).Int()
-	if err == redis.Nil {
+	if err == nil {
 		return 0, nil
 	}
 	if err != nil {

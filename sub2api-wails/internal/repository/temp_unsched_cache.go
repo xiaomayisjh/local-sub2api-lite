@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"sub2api-wails/internal/pkg/redismem"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,26 +13,7 @@ import (
 
 const tempUnschedPrefix = "temp_unsched:account:"
 
-var tempUnschedSetScript = redis.NewScript(`
-	local key = KEYS[1]
-	local new_until = tonumber(ARGV[1])
-	local new_value = ARGV[2]
-	local new_ttl = tonumber(ARGV[3])
-
-	local existing = redis.call('GET', key)
-	if existing then
-		local ok, existing_data = pcall(cjson.decode, existing)
-		if ok and existing_data and existing_data.until_unix then
-			local existing_until = tonumber(existing_data.until_unix)
-			if existing_until and new_until <= existing_until then
-				return 0
-			end
-		end
-	end
-
-	redis.call('SET', key, new_value, 'EX', new_ttl)
-	return 1
-`)
+var tempUnschedSetScript = NewScript("")
 
 type tempUnschedCache struct {
 	rdb *RedisStub
@@ -69,10 +51,10 @@ func (c *tempUnschedCache) GetTempUnsched(ctx context.Context, accountID int64) 
 	key := fmt.Sprintf("%s%d", tempUnschedPrefix, accountID)
 
 	val, err := c.rdb.Get(ctx, key).Result()
-	if err == redis.Nil {
-		return nil, nil
-	}
 	if err != nil {
+		if err == redismem.Nil {
+			return nil, nil
+		}
 		return nil, err
 	}
 

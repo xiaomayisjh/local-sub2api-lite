@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"sub2api-wails/internal/pkg/redismem"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -53,7 +54,7 @@ func (c *refreshTokenCache) GetRefreshToken(ctx context.Context, tokenHash strin
 	key := refreshTokenKey(tokenHash)
 	val, err := c.rdb.Get(ctx, key).Result()
 	if err != nil {
-		if err == redis.Nil {
+		if err == redismem.Nil {
 			return nil, service.ErrRefreshTokenNotFound
 		}
 		return nil, err
@@ -73,7 +74,7 @@ func (c *refreshTokenCache) DeleteRefreshToken(ctx context.Context, tokenHash st
 func (c *refreshTokenCache) DeleteUserRefreshTokens(ctx context.Context, userID int64) error {
 	// Get all token hashes for this user
 	tokenHashes, err := c.GetUserTokenHashes(ctx, userID)
-	if err != nil && err != redis.Nil {
+	if err != nil {
 		return fmt.Errorf("get user token hashes: %w", err)
 	}
 
@@ -100,7 +101,7 @@ func (c *refreshTokenCache) DeleteUserRefreshTokens(ctx context.Context, userID 
 func (c *refreshTokenCache) DeleteTokenFamily(ctx context.Context, familyID string) error {
 	// Get all token hashes in this family
 	tokenHashes, err := c.GetFamilyTokenHashes(ctx, familyID)
-	if err != nil && err != redis.Nil {
+	if err != nil {
 		return fmt.Errorf("get family token hashes: %w", err)
 	}
 

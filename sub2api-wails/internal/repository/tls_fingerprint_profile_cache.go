@@ -43,7 +43,7 @@ func (c *tlsFingerprintProfileCache) Get(ctx context.Context) ([]*model.TLSFinge
 
 	data, err := c.rdb.Get(ctx, tlsFPProfileCacheKey).Bytes()
 	if err != nil {
-		if err != redis.Nil {
+		if err != nil {
 			slog.Warn("tls_fp_profile_cache_get_failed", "error", err)
 		}
 		return nil, false

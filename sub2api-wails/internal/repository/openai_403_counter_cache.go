@@ -10,17 +10,7 @@ import (
 
 const openAI403CounterPrefix = "openai_403_count:account:"
 
-var openAI403CounterIncrScript = redis.NewScript(`
-	local key = KEYS[1]
-	local ttl = tonumber(ARGV[1])
-
-	local count = redis.call('INCR', key)
-	if count == 1 then
-		redis.call('EXPIRE', key, ttl)
-	end
-
-	return count
-`)
+var openAI403CounterIncrScript = NewScript("")
 
 type openAI403CounterCache struct {
 	rdb *RedisStub

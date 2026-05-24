@@ -387,7 +387,7 @@ func (s *OpsAggregationService) tryAcquireLeaderLock(ctx context.Context, key st
 	// Prefer Redis leader lock when available (multi-instance), but avoid stampeding
 	// the DB when Redis is flaky by falling back to a DB advisory lock.
 	if s.redisClient != nil {
-		ok, err := s.redisClient.SetNX(ctx, key, s.instanceID, ttl)
+		ok, err := s.redisClient.SetNX(ctx, key, s.instanceID, ttl).Result()
 		if err == nil {
 			if !ok {
 				s.maybeLogSkip(logPrefix)
@@ -396,7 +396,7 @@ func (s *OpsAggregationService) tryAcquireLeaderLock(ctx context.Context, key st
 			release := func() {
 				ctx2, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				defer cancel()
-				s.redisClient.Del(ctx2, key)
+				s.redisClient.Del(ctx2, key).Err()
 			}
 			return release, true
 		}

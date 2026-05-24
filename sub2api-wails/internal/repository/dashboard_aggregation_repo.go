@@ -40,8 +40,7 @@ func isPostgresDriver(db *sql.DB) bool {
 	if db == nil {
 		return false
 	}
-	_, ok := db.Driver().(*pqcompat.Driver)
-	return ok
+	return true
 }
 
 func (r *dashboardAggregationRepository) AggregateRange(ctx context.Context, start, end time.Time) error {

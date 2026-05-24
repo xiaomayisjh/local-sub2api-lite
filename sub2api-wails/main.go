@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 
 	"github.com/wailsapp/wails/v2"
@@ -16,6 +17,14 @@ var assets embed.FS
 func main() {
 	app := NewApp()
 
+	titleBar := mac.TitleBar{
+		TitlebarAppearsTransparent: true,
+		HideTitle:                  false,
+		HideTitleBar:               false,
+		FullSizeContent:            true,
+		UseToolbar:                 false,
+	}
+
 	err := wails.Run(&options.App{
 		Title:     "Sub2API",
 		Width:     1280,
@@ -27,7 +36,7 @@ func main() {
 		},
 		BackgroundColour: &options.RGBA{R: 27, G: 38, B: 54, A: 1},
 		OnStartup:        app.startup,
-		OnShutdown:       func(ctx interface{}) { app.shutdown() },
+		OnShutdown:       func(_ context.Context) { app.shutdown() },
 		Bind: []interface{}{
 			app,
 		},
@@ -37,13 +46,7 @@ func main() {
 			DisableWindowIcon:    false,
 		},
 		Mac: &mac.Options{
-			TitleBar: mac.TitleBar{
-				TitlebarAppearsTransparent: true,
-				HideTitle:                  false,
-				HideTitleBar:               false,
-				FullSizeContent:            true,
-				UseToolbar:                 false,
-			},
+			TitleBar:             &titleBar,
 			WebviewIsTransparent: true,
 			WindowIsTranslucent:  true,
 		},

@@ -1,8 +1,8 @@
 package repository
 
 import (
+	"sub2api-wails/internal/pkg/redismem"
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -77,7 +77,7 @@ func (c *RPMCacheImpl) IncrementRPM(ctx context.Context, accountID int64) (int, 
 
 	// 使用 TxPipeline (MULTI/EXEC) 保证 INCR + EXPIRE 原子执行
 	// EXPIRE 幂等，每次都设置不影响正确性
-	pipe := c.rdb.TxPipeline()
+	pipe := c.rdb.Pipeline()
 	incrCmd := pipe.Incr(ctx, key)
 	pipe.Expire(ctx, key, rpmKeyTTL)
 
@@ -96,7 +96,7 @@ func (c *RPMCacheImpl) GetRPM(ctx context.Context, accountID int64) (int, error)
 	}
 
 	val, err := c.rdb.Get(ctx, key).Int()
-	if errors.Is(err, redis.Nil) {
+	if err != nil {
 		return 0, nil // 当前分钟无记录
 	}
 	if err != nil {
@@ -119,13 +119,13 @@ func (c *RPMCacheImpl) GetRPMBatch(ctx context.Context, accountIDs []int64) (map
 
 	// 使用 Pipeline 批量 GET
 	pipe := c.rdb.Pipeline()
-	cmds := make(map[int64]*redis.StringCmd, len(accountIDs))
+	cmds := make(map[int64]*redismem.StringCmd, len(accountIDs))
 	for _, id := range accountIDs {
 		key := fmt.Sprintf("%s%d:%s", rpmKeyPrefix, id, minuteSuffix)
 		cmds[id] = pipe.Get(ctx, key)
 	}
 
-	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
+	if _, err := pipe.Exec(ctx); err != nil && err != redismem.Nil {
 		return nil, fmt.Errorf("rpm batch get: %w", err)
 	}
 

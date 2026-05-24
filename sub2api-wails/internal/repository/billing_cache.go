@@ -71,29 +71,9 @@ const (
 )
 
 var (
-	deductBalanceScript = redis.NewScript(`
-		local current = redis.call('GET', KEYS[1])
-		if current == false then
-			return 0
-		end
-		local newVal = tonumber(current) - tonumber(ARGV[1])
-		redis.call('SET', KEYS[1], newVal)
-		redis.call('EXPIRE', KEYS[1], ARGV[2])
-		return 1
-	`)
+	deductBalanceScript = NewScript("")
 
-	updateSubUsageScript = redis.NewScript(`
-		local exists = redis.call('EXISTS', KEYS[1])
-		if exists == 0 then
-			return 0
-		end
-		local cost = tonumber(ARGV[1])
-		redis.call('HINCRBYFLOAT', KEYS[1], 'daily_usage', cost)
-		redis.call('HINCRBYFLOAT', KEYS[1], 'weekly_usage', cost)
-		redis.call('HINCRBYFLOAT', KEYS[1], 'monthly_usage', cost)
-		redis.call('EXPIRE', KEYS[1], ARGV[2])
-		return 1
-	`)
+	updateSubUsageScript = NewScript("")
 
 	// updateRateLimitUsageScript atomically increments all three rate limit usage counters
 	// with window expiration checking. If a window has expired, its usage is reset to cost
@@ -101,37 +81,7 @@ var (
 	// IncrementRateLimitUsage semantics.
 	//
 	// ARGV: [1]=cost, [2]=ttl_seconds, [3]=now_unix, [4]=window_5h_seconds, [5]=window_1d_seconds, [6]=window_7d_seconds
-	updateRateLimitUsageScript = redis.NewScript(`
-		local exists = redis.call('EXISTS', KEYS[1])
-		if exists == 0 then
-			return 0
-		end
-		local cost = tonumber(ARGV[1])
-		local now = tonumber(ARGV[3])
-		local win5h = tonumber(ARGV[4])
-		local win1d = tonumber(ARGV[5])
-		local win7d = tonumber(ARGV[6])
-
-		-- Helper: check if window is expired and update usage + window accordingly
-		-- Returns nothing, modifies the hash in-place.
-		local function update_window(usage_field, window_field, window_duration)
-			local w = tonumber(redis.call('HGET', KEYS[1], window_field) or 0)
-			if w == 0 or (now - w) >= window_duration then
-				-- Window expired or never started: reset usage to cost, start new window
-				redis.call('HSET', KEYS[1], usage_field, tostring(cost))
-				redis.call('HSET', KEYS[1], window_field, tostring(now))
-			else
-				-- Window still valid: accumulate
-				redis.call('HINCRBYFLOAT', KEYS[1], usage_field, cost)
-			end
-		end
-
-		update_window('usage_5h', 'window_5h', win5h)
-		update_window('usage_1d', 'window_1d', win1d)
-		update_window('usage_7d', 'window_7d', win7d)
-		redis.call('EXPIRE', KEYS[1], ARGV[2])
-		return 1
-	`)
+	updateRateLimitUsageScript = NewScript("")
 )
 
 type billingCache struct {
@@ -159,7 +109,7 @@ func (c *billingCache) SetUserBalance(ctx context.Context, userID int64, balance
 func (c *billingCache) DeductUserBalance(ctx context.Context, userID int64, amount float64) error {
 	key := billingBalanceKey(userID)
 	_, err := deductBalanceScript.Run(ctx, c.rdb, []string{key}, amount, int(jitteredTTL().Seconds())).Result()
-	if err != nil && !errors.Is(err, redis.Nil) {
+	if err != nil  {
 		log.Printf("Warning: deduct balance cache failed for user %d: %v", userID, err)
 		return err
 	}
@@ -178,7 +128,7 @@ func (c *billingCache) GetSubscriptionCache(ctx context.Context, userID, groupID
 		return nil, err
 	}
 	if len(result) == 0 {
-		return nil, redis.Nil
+		return nil, nil
 	}
 	return c.parseSubscriptionCache(result)
 }
@@ -243,7 +193,7 @@ func (c *billingCache) SetSubscriptionCache(ctx context.Context, userID, groupID
 func (c *billingCache) UpdateSubscriptionUsage(ctx context.Context, userID, groupID int64, cost float64) error {
 	key := billingSubKey(userID, groupID)
 	_, err := updateSubUsageScript.Run(ctx, c.rdb, []string{key}, cost, int(jitteredTTL().Seconds())).Result()
-	if err != nil && !errors.Is(err, redis.Nil) {
+	if err != nil  {
 		log.Printf("Warning: update subscription usage cache failed for user %d group %d: %v", userID, groupID, err)
 		return err
 	}
@@ -262,7 +212,7 @@ func (c *billingCache) GetAPIKeyRateLimit(ctx context.Context, keyID int64) (*se
 		return nil, err
 	}
 	if len(result) == 0 {
-		return nil, redis.Nil
+		return nil, nil
 	}
 	data := &service.APIKeyRateLimitCacheData{}
 	if v, ok := result[rateLimitFieldUsage5h]; ok {
@@ -317,7 +267,7 @@ func (c *billingCache) UpdateAPIKeyRateLimitUsage(ctx context.Context, keyID int
 		int(rateLimitWindow1d.Seconds()),
 		int(rateLimitWindow7d.Seconds()),
 	).Result()
-	if err != nil && !errors.Is(err, redis.Nil) {
+	if err != nil  {
 		log.Printf("Warning: update rate limit usage cache failed for api key %d: %v", keyID, err)
 		return err
 	}

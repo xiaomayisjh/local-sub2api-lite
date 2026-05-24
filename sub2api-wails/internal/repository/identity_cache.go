@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"sub2api-wails/internal/pkg/redismem"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -61,7 +62,7 @@ func (c *identityCache) GetMaskedSessionID(ctx context.Context, accountID int64)
 	key := maskedSessionKey(accountID)
 	val, err := c.rdb.Get(ctx, key).Result()
 	if err != nil {
-		if err == redis.Nil {
+		if err == redismem.Nil {
 			return "", nil
 		}
 		return "", err

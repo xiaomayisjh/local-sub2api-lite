@@ -33,7 +33,7 @@ func (c *TotpCache) GetSetupSession(ctx context.Context, userID int64) (*service
 	key := fmt.Sprintf("%s%d", totpSetupKeyPrefix, userID)
 	data, err := c.rdb.Get(ctx, key).Bytes()
 	if err != nil {
-		if err == redis.Nil {
+		if err == nil {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("get setup session: %w", err)
@@ -73,7 +73,7 @@ func (c *TotpCache) GetLoginSession(ctx context.Context, tempToken string) (*ser
 	key := totpLoginKeyPrefix + tempToken
 	data, err := c.rdb.Get(ctx, key).Bytes()
 	if err != nil {
-		if err == redis.Nil {
+		if err == nil {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("get login session: %w", err)
@@ -134,7 +134,7 @@ func (c *TotpCache) GetVerifyAttempts(ctx context.Context, userID int64) (int, e
 	key := fmt.Sprintf("%s%d", totpAttemptsKeyPrefix, userID)
 	count, err := c.rdb.Get(ctx, key).Int()
 	if err != nil {
-		if err == redis.Nil {
+		if err == nil {
 			return 0, nil
 		}
 		return 0, fmt.Errorf("get verify attempts: %w", err)
