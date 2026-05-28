@@ -113,6 +113,35 @@ func (c *snapshotCache) GetOrLoad(key string, load func() (any, error)) (snapsho
 	return result.Entry, result.Hit, nil
 }
 
+// SetTTL overrides the cache TTL. Used by config bootstrap (local mode shortens caches).
+func (c *snapshotCache) SetTTL(ttl time.Duration) {
+	if c == nil || ttl <= 0 {
+		return
+	}
+	c.mu.Lock()
+	c.ttl = ttl
+	c.mu.Unlock()
+}
+
+// Invalidate drops cached entries by key prefix (empty prefix = drop all). Used after
+// writes that produce visible metric changes so the UI sees fresh data immediately.
+func (c *snapshotCache) Invalidate(prefix string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if prefix == "" {
+		c.items = make(map[string]snapshotCacheEntry)
+		return
+	}
+	for key := range c.items {
+		if strings.HasPrefix(key, prefix) {
+			delete(c.items, key)
+		}
+	}
+}
+
 func buildETagFromAny(payload any) string {
 	raw, err := json.Marshal(payload)
 	if err != nil {

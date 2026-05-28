@@ -25,7 +25,7 @@ type proxyRepository struct {
 }
 
 func NewProxyRepository(client *dbent.Client, sqlDB *sql.DB) service.ProxyRepository {
-	return newProxyRepositoryWithSQL(client, sqlDB)
+	return newProxyRepositoryWithSQL(client, SQLExecutorFromDB(sqlDB))
 }
 
 func newProxyRepositoryWithSQL(client *dbent.Client, sqlq sqlQuerier) *proxyRepository {

@@ -83,6 +83,9 @@ vi.mock("@/api", () => ({
 }));
 
 vi.mock("@/stores", () => ({
+  useAuthStore: () => ({
+    isLocalMode: false,
+  }),
   useAppStore: () => ({
     showError,
     showSuccess,

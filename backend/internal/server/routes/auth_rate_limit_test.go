@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	servermiddleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/gin-gonic/gin"
@@ -30,6 +31,7 @@ func newAuthRoutesTestRouter(redisClient *redis.Client) *gin.Engine {
 		}),
 		redisClient,
 		nil,
+		&config.Config{RunMode: config.RunModeStandard},
 	)
 
 	return router

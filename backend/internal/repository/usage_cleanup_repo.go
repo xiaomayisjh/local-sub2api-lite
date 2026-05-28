@@ -12,6 +12,7 @@ import (
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	dbusagecleanuptask "github.com/Wei-Shaw/sub2api/ent/usagecleanuptask"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	"github.com/Wei-Shaw/sub2api/internal/repository/sqldialect"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
@@ -21,7 +22,7 @@ type usageCleanupRepository struct {
 }
 
 func NewUsageCleanupRepository(client *dbent.Client, sqlDB *sql.DB) service.UsageCleanupRepository {
-	return newUsageCleanupRepositoryWithSQL(client, sqlDB)
+	return newUsageCleanupRepositoryWithSQL(client, SQLExecutorFromDB(sqlDB))
 }
 
 func newUsageCleanupRepositoryWithSQL(client *dbent.Client, sqlq sqlExecutor) *usageCleanupRepository {
@@ -120,7 +121,11 @@ func (r *usageCleanupRepository) ClaimNextPendingTask(ctx context.Context, stale
 	if staleRunningAfterSeconds <= 0 {
 		staleRunningAfterSeconds = 1800
 	}
-	query := `
+	if sqldialect.UsesSQLite() {
+		return r.claimNextPendingTaskSQLite(ctx, staleRunningAfterSeconds)
+	}
+	staleBefore := sqldialect.SecondsBeforeNowExpr("$3")
+	query := fmt.Sprintf(`
 		WITH next AS (
 			SELECT id
 			FROM usage_cleanup_tasks
@@ -128,7 +133,7 @@ func (r *usageCleanupRepository) ClaimNextPendingTask(ctx context.Context, stale
 				OR (
 					status = $2
 					AND started_at IS NOT NULL
-					AND started_at < NOW() - ($3 * interval '1 second')
+					AND started_at < %s
 				)
 			ORDER BY created_at ASC
 			LIMIT 1
@@ -144,7 +149,77 @@ func (r *usageCleanupRepository) ClaimNextPendingTask(ctx context.Context, stale
 		WHERE tasks.id = next.id
 		RETURNING tasks.id, tasks.status, tasks.filters, tasks.created_by, tasks.deleted_rows, tasks.error_message,
 			tasks.started_at, tasks.finished_at, tasks.created_at, tasks.updated_at
-	`
+	`, staleBefore)
+	var task service.UsageCleanupTask
+	var filtersJSON []byte
+	var errMsg sql.NullString
+	var startedAt sql.NullTime
+	var finishedAt sql.NullTime
+	if err := scanSingleRow(
+		ctx,
+		r.sql,
+		query,
+		[]any{
+			service.UsageCleanupStatusPending,
+			service.UsageCleanupStatusRunning,
+			staleRunningAfterSeconds,
+			service.UsageCleanupStatusRunning,
+		},
+		&task.ID,
+		&task.Status,
+		&filtersJSON,
+		&task.CreatedBy,
+		&task.DeletedRows,
+		&errMsg,
+		&startedAt,
+		&finishedAt,
+		&task.CreatedAt,
+		&task.UpdatedAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if err := json.Unmarshal(filtersJSON, &task.Filters); err != nil {
+		return nil, fmt.Errorf("parse cleanup filters: %w", err)
+	}
+	if errMsg.Valid {
+		task.ErrorMsg = &errMsg.String
+	}
+	if startedAt.Valid {
+		task.StartedAt = &startedAt.Time
+	}
+	if finishedAt.Valid {
+		task.FinishedAt = &finishedAt.Time
+	}
+	return &task, nil
+}
+
+func (r *usageCleanupRepository) claimNextPendingTaskSQLite(ctx context.Context, staleRunningAfterSeconds int64) (*service.UsageCleanupTask, error) {
+	staleBefore := sqldialect.SecondsBeforeNowExpr("$3")
+	query := fmt.Sprintf(`
+		UPDATE usage_cleanup_tasks
+		SET status = $4,
+			started_at = datetime('now'),
+			finished_at = NULL,
+			error_message = NULL,
+			updated_at = datetime('now')
+		WHERE id = (
+			SELECT id
+			FROM usage_cleanup_tasks
+			WHERE status = $1
+				OR (
+					status = $2
+					AND started_at IS NOT NULL
+					AND started_at < %s
+				)
+			ORDER BY created_at ASC
+			LIMIT 1
+		)
+		RETURNING id, status, filters, created_by, deleted_rows, error_message,
+			started_at, finished_at, created_at, updated_at
+	`, staleBefore)
 	var task service.UsageCleanupTask
 	var filtersJSON []byte
 	var errMsg sql.NullString

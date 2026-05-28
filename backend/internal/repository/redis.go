@@ -2,11 +2,18 @@ package repository
 
 import (
 	"crypto/tls"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+)
+
+var (
+	embeddedRedis     *miniredis.Miniredis
+	embeddedRedisMu   sync.Mutex
 )
 
 // InitRedis 初始化 Redis 客户端
@@ -21,7 +28,38 @@ import (
 // 2. MinIdleConns: 保持最小空闲连接，减少冷启动延迟（默认 10）
 // 3. DialTimeout/ReadTimeout/WriteTimeout: 精确控制各阶段超时
 func InitRedis(cfg *config.Config) *redis.Client {
+	if cfg != nil && cfg.UsesEmbeddedRedis() {
+		return initEmbeddedRedis(cfg)
+	}
 	return redis.NewClient(buildRedisOptions(cfg))
+}
+
+func initEmbeddedRedis(cfg *config.Config) *redis.Client {
+	embeddedRedisMu.Lock()
+	defer embeddedRedisMu.Unlock()
+
+	if embeddedRedis == nil {
+		mr, err := miniredis.Run()
+		if err != nil {
+			panic("miniredis: " + err.Error())
+		}
+		embeddedRedis = mr
+	}
+
+	opts := buildRedisOptions(cfg)
+	opts.Addr = embeddedRedis.Addr()
+	opts.Password = ""
+	return redis.NewClient(opts)
+}
+
+// CloseEmbeddedRedis stops the in-process miniredis instance, if any.
+func CloseEmbeddedRedis() {
+	embeddedRedisMu.Lock()
+	defer embeddedRedisMu.Unlock()
+	if embeddedRedis != nil {
+		embeddedRedis.Close()
+		embeddedRedis = nil
+	}
 }
 
 // buildRedisOptions 构建 Redis 连接选项

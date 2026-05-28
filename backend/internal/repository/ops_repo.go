@@ -8,12 +8,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/repository/sqldialect"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
 )
 
 type opsRepository struct {
-	db *sql.DB
+	db *RebindDB
 }
 
 const insertOpsErrorLogSQL = `
@@ -60,7 +61,7 @@ INSERT INTO ops_error_logs (
 )`
 
 func NewOpsRepository(db *sql.DB) service.OpsRepository {
-	return &opsRepository{db: db}
+	return &opsRepository{db: WrapDB(db)}
 }
 
 func (r *opsRepository) InsertErrorLog(ctx context.Context, input *service.OpsInsertErrorLogInput) (int64, error) {
@@ -186,6 +187,9 @@ func (r *opsRepository) ListErrorLogs(ctx context.Context, filter *service.OpsEr
 	}
 	if pageSize > 500 {
 		pageSize = 500
+	}
+	if sqldialect.UsesSQLite() {
+		return emptyOpsErrorLogList(page, pageSize), nil
 	}
 
 	where, args := buildOpsErrorLogsWhere(filter)
@@ -685,6 +689,9 @@ func (r *opsRepository) ListSystemLogs(ctx context.Context, filter *service.OpsS
 	}
 	if pageSize > 200 {
 		pageSize = 200
+	}
+	if sqldialect.UsesSQLite() {
+		return emptyOpsSystemLogList(page, pageSize), nil
 	}
 
 	where, args, _ := buildOpsSystemLogsWhere(filter)

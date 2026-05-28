@@ -212,10 +212,12 @@ import TotpLoginModal from '@/components/auth/TotpLoginModal.vue'
 import Icon from '@/components/icons/Icon.vue'
 import TurnstileWidget from '@/components/TurnstileWidget.vue'
 import { useAuthStore, useAppStore } from '@/stores'
-import { getPublicSettings, isTotp2FARequired, isWeChatWebOAuthEnabled } from '@/api/auth'
+import { isTotp2FARequired, isWeChatWebOAuthEnabled } from '@/api/auth'
 import type { LoginAgreementDocument, TotpLoginResponse } from '@/types'
 import { extractI18nErrorMessage } from '@/utils/apiError'
 import { clearAllAffiliateReferralCodes } from '@/utils/oauthAffiliate'
+import { resolvePostLoginPath } from '@/utils/postLoginRedirect'
+import { isValidAuthEmail } from '@/utils/emailAuth'
 
 const { t } = useI18n()
 const LOGIN_AGREEMENT_STORAGE_KEY = 'sub2api_login_agreement_consent'
@@ -315,7 +317,10 @@ onMounted(async () => {
   }
 
   try {
-    const settings = await getPublicSettings()
+    const settings = await appStore.fetchPublicSettings()
+    if (!settings) {
+      throw new Error('public settings unavailable')
+    }
     turnstileEnabled.value = settings.turnstile_enabled
     turnstileSiteKey.value = settings.turnstile_site_key || ''
     linuxdoOAuthEnabled.value = settings.linuxdo_oauth_enabled
@@ -329,6 +334,10 @@ onMounted(async () => {
     backendModeEnabled.value = settings.backend_mode_enabled
     passwordResetEnabled.value = settings.password_reset_enabled
     applyLoginAgreementSettings(settings)
+    authStore.applyRunModeFromSettings(settings.run_mode)
+    if (authStore.isLocalMode && !formData.email) {
+      formData.email = 'admin@localhost'
+    }
   } catch (error) {
     console.error('Failed to load public settings:', error)
     loginAgreementEnabled.value = false
@@ -439,7 +448,12 @@ function validateForm(): boolean {
   if (!formData.email.trim()) {
     errors.email = t('auth.emailRequired')
     isValid = false
-  } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
+  } else if (
+    !isValidAuthEmail(
+      formData.email,
+      authStore.isLocalMode || appStore.cachedPublicSettings?.run_mode === 'local'
+    )
+  ) {
     errors.email = t('auth.invalidEmail')
     isValid = false
   }
@@ -498,8 +512,13 @@ async function handleLogin(): Promise<void> {
     appStore.showSuccess(t('auth.loginSuccess'))
 
     // Redirect to dashboard or intended route
-    const redirectTo = (router.currentRoute.value.query.redirect as string) || '/dashboard'
-    await router.push(redirectTo)
+    await router.push(
+      resolvePostLoginPath(router, {
+        isAdmin: authStore.isAdmin,
+        isLocalMode: authStore.isLocalMode,
+        backendModeEnabled: appStore.backendModeEnabled
+      })
+    )
   } catch (error: unknown) {
     // Reset Turnstile on error
     if (turnstileRef.value) {
@@ -532,8 +551,13 @@ async function handle2FAVerify(code: string): Promise<void> {
     appStore.showSuccess(t('auth.loginSuccess'))
 
     // Redirect to dashboard or intended route
-    const redirectTo = (router.currentRoute.value.query.redirect as string) || '/dashboard'
-    await router.push(redirectTo)
+    await router.push(
+      resolvePostLoginPath(router, {
+        isAdmin: authStore.isAdmin,
+        isLocalMode: authStore.isLocalMode,
+        backendModeEnabled: appStore.backendModeEnabled
+      })
+    )
   } catch (error: unknown) {
     const err = error as { message?: string; response?: { data?: { message?: string } } }
     const message = err.response?.data?.message || err.message || t('profile.totp.loginFailed')

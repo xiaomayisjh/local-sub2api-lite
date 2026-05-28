@@ -86,6 +86,7 @@ type AdminService interface {
 	ForceAntigravityPrivacy(ctx context.Context, account *Account) string
 	SetAccountSchedulable(ctx context.Context, id int64, schedulable bool) (*Account, error)
 	BulkUpdateAccounts(ctx context.Context, input *BulkUpdateAccountsInput) (*BulkUpdateAccountsResult, error)
+	ResolveAccountIDsByFilters(ctx context.Context, filters *BulkUpdateAccountFilters) ([]int64, error)
 	CheckMixedChannelRisk(ctx context.Context, currentAccountID int64, currentAccountPlatform string, groupIDs []int64) error
 
 	// Proxy management
@@ -2760,6 +2761,12 @@ func (s *adminServiceImpl) resolveBulkUpdateTargetIDs(ctx context.Context, filte
 		}
 		page++
 	}
+}
+
+// ResolveAccountIDsByFilters returns every account ID matching the provided filters.
+// Used by batch endpoints to support "apply to all matching" without first paginating client-side.
+func (s *adminServiceImpl) ResolveAccountIDsByFilters(ctx context.Context, filters *BulkUpdateAccountFilters) ([]int64, error) {
+	return s.resolveBulkUpdateTargetIDs(ctx, filters)
 }
 
 func (s *adminServiceImpl) DeleteAccount(ctx context.Context, id int64) error {

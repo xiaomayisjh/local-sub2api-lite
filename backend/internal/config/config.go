@@ -89,6 +89,7 @@ type Config struct {
 	Concurrency             ConcurrencyConfig             `mapstructure:"concurrency"`
 	TokenRefresh            TokenRefreshConfig            `mapstructure:"token_refresh"`
 	RunMode                 string                        `mapstructure:"run_mode" yaml:"run_mode"`
+	Local                   LocalConfig                   `mapstructure:"local"`
 	Timezone                string                        `mapstructure:"timezone"` // e.g. "Asia/Shanghai", "UTC"
 	Gemini                  GeminiConfig                  `mapstructure:"gemini"`
 	Update                  UpdateConfig                  `mapstructure:"update"`
@@ -1050,12 +1051,14 @@ func (s *ServerConfig) Address() string {
 // DatabaseConfig 数据库连接配置
 // 性能优化：新增连接池参数，避免频繁创建/销毁连接
 type DatabaseConfig struct {
-	Host     string `mapstructure:"host"`
-	Port     int    `mapstructure:"port"`
-	User     string `mapstructure:"user"`
-	Password string `mapstructure:"password"`
-	DBName   string `mapstructure:"dbname"`
-	SSLMode  string `mapstructure:"sslmode"`
+	Driver     string `mapstructure:"driver"`
+	SqlitePath string `mapstructure:"sqlite_path"`
+	Host       string `mapstructure:"host"`
+	Port       int    `mapstructure:"port"`
+	User       string `mapstructure:"user"`
+	Password   string `mapstructure:"password"`
+	DBName     string `mapstructure:"dbname"`
+	SSLMode    string `mapstructure:"sslmode"`
 	// 连接池配置（性能优化：可配置化连接池参数）
 	// MaxOpenConns: 最大打开连接数，控制数据库连接上限，防止资源耗尽
 	MaxOpenConns int `mapstructure:"max_open_conns"`
@@ -1065,6 +1068,11 @@ type DatabaseConfig struct {
 	ConnMaxLifetimeMinutes int `mapstructure:"conn_max_lifetime_minutes"`
 	// ConnMaxIdleTimeMinutes: 空闲连接最大存活时间，及时释放不活跃连接
 	ConnMaxIdleTimeMinutes int `mapstructure:"conn_max_idle_time_minutes"`
+}
+
+// SqliteDSN builds a SQLite connection string for modernc.org/sqlite.
+func (d *DatabaseConfig) SqliteDSN(absPath string) string {
+	return fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)", absPath)
 }
 
 func (d *DatabaseConfig) DSN() string {
@@ -1102,6 +1110,7 @@ func (d *DatabaseConfig) DSNWithTimezone(tz string) string {
 // RedisConfig Redis 连接配置
 // 性能优化：新增连接池和超时参数，提升高并发场景下的吞吐量
 type RedisConfig struct {
+	Mode     string `mapstructure:"mode"`
 	Host     string `mapstructure:"host"`
 	Port     int    `mapstructure:"port"`
 	Password string `mapstructure:"password"`
@@ -1288,7 +1297,7 @@ type UsageCleanupConfig struct {
 func NormalizeRunMode(value string) string {
 	normalized := strings.ToLower(strings.TrimSpace(value))
 	switch normalized {
-	case RunModeStandard, RunModeSimple:
+	case RunModeStandard, RunModeSimple, RunModeLocal:
 		return normalized
 	default:
 		return RunModeStandard
@@ -1345,6 +1354,31 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	}
 
 	cfg.RunMode = NormalizeRunMode(cfg.RunMode)
+	cfg.Database.Driver = strings.ToLower(strings.TrimSpace(cfg.Database.Driver))
+	if cfg.Database.Driver == "" {
+		cfg.Database.Driver = DatabaseDriverPostgres
+	}
+	cfg.Redis.Mode = strings.ToLower(strings.TrimSpace(cfg.Redis.Mode))
+	if cfg.Redis.Mode == "" {
+		cfg.Redis.Mode = RedisModeExternal
+	}
+	if cfg.RunMode == RunModeLocal {
+		cfg.Database.Driver = DatabaseDriverSQLite
+		cfg.Redis.Mode = RedisModeEmbedded
+		// 本地单用户模式下，缩短仪表盘/统计相关缓存 TTL，让用户看到几乎实时的数据。
+		if cfg.Dashboard.StatsFreshTTLSeconds <= 0 || cfg.Dashboard.StatsFreshTTLSeconds > 2 {
+			cfg.Dashboard.StatsFreshTTLSeconds = 2
+		}
+		if cfg.Dashboard.StatsTTLSeconds <= 0 || cfg.Dashboard.StatsTTLSeconds > 5 {
+			cfg.Dashboard.StatsTTLSeconds = 5
+		}
+	}
+	if strings.TrimSpace(cfg.Local.AutoAPIKeyName) == "" {
+		cfg.Local.AutoAPIKeyName = "default-local-key"
+	}
+	if strings.TrimSpace(cfg.Local.DefaultAdminEmail) == "" {
+		cfg.Local.DefaultAdminEmail = "admin@localhost"
+	}
 	cfg.Server.Mode = strings.ToLower(strings.TrimSpace(cfg.Server.Mode))
 	if cfg.Server.Mode == "" {
 		cfg.Server.Mode = "debug"
@@ -1447,7 +1481,7 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 		cfg.JWT.Secret = ""
 	}
 
-	if !cfg.Security.URLAllowlist.Enabled {
+	if !cfg.Security.URLAllowlist.Enabled && !cfg.IsLocalMode() {
 		slog.Warn("security.url_allowlist.enabled=false; allowlist/SSRF checks disabled (minimal format validation only).")
 	}
 	if !cfg.Security.ResponseHeaders.Enabled {
@@ -1469,6 +1503,9 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 
 func setDefaults() {
 	viper.SetDefault("run_mode", RunModeStandard)
+	viper.SetDefault("local.default_admin_email", "admin@localhost")
+	viper.SetDefault("local.default_admin_password", "")
+	viper.SetDefault("local.auto_api_key_name", "default-local-key")
 
 	// Server
 	viper.SetDefault("server.host", "0.0.0.0")
@@ -1620,6 +1657,8 @@ func setDefaults() {
 	viper.SetDefault("dingtalk_connect.username_overwrite_policy", "if_empty")
 
 	// Database
+	viper.SetDefault("database.driver", DatabaseDriverPostgres)
+	viper.SetDefault("database.sqlite_path", "sub2api.db")
 	viper.SetDefault("database.host", "localhost")
 	viper.SetDefault("database.port", 5432)
 	viper.SetDefault("database.user", "postgres")
@@ -1632,6 +1671,7 @@ func setDefaults() {
 	viper.SetDefault("database.conn_max_idle_time_minutes", 5)
 
 	// Redis
+	viper.SetDefault("redis.mode", RedisModeExternal)
 	viper.SetDefault("redis.host", "localhost")
 	viper.SetDefault("redis.port", 6379)
 	viper.SetDefault("redis.password", "")
@@ -1892,6 +1932,18 @@ func setDefaults() {
 }
 
 func (c *Config) Validate() error {
+	if c.RunMode == RunModeLocal {
+		if !c.UsesSQLite() {
+			return fmt.Errorf("run_mode=local requires database.driver=sqlite")
+		}
+		if strings.TrimSpace(c.Database.SqlitePath) == "" {
+			return fmt.Errorf("database.sqlite_path is required when run_mode=local")
+		}
+	}
+	if c.UsesSQLite() && c.RunMode != RunModeLocal {
+		return fmt.Errorf("database.driver=sqlite is only supported with run_mode=local")
+	}
+
 	jwtSecret := strings.TrimSpace(c.JWT.Secret)
 	if jwtSecret == "" {
 		return fmt.Errorf("jwt.secret is required")

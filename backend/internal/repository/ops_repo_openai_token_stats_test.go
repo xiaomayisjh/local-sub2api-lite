@@ -12,7 +12,7 @@ import (
 
 func TestOpsRepositoryGetOpenAITokenStats_PaginationMode(t *testing.T) {
 	db, mock := newSQLMock(t)
-	repo := &opsRepository{db: db}
+	repo := &opsRepository{db: WrapDB(db)}
 
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	end := start.Add(24 * time.Hour)
@@ -70,7 +70,7 @@ func TestOpsRepositoryGetOpenAITokenStats_PaginationMode(t *testing.T) {
 
 func TestOpsRepositoryGetOpenAITokenStats_TopNMode(t *testing.T) {
 	db, mock := newSQLMock(t)
-	repo := &opsRepository{db: db}
+	repo := &opsRepository{db: WrapDB(db)}
 
 	start := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
 	end := start.Add(time.Hour)
@@ -116,7 +116,7 @@ func TestOpsRepositoryGetOpenAITokenStats_TopNMode(t *testing.T) {
 
 func TestOpsRepositoryGetOpenAITokenStats_EmptyResult(t *testing.T) {
 	db, mock := newSQLMock(t)
-	repo := &opsRepository{db: db}
+	repo := &opsRepository{db: WrapDB(db)}
 
 	start := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 	end := start.Add(30 * time.Minute)

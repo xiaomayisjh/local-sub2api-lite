@@ -3,9 +3,16 @@
  * Base client with interceptors for authentication, token refresh, and error handling
  */
 
-import axios, { AxiosInstance, AxiosError, InternalAxiosRequestConfig, AxiosResponse } from 'axios'
+import axios, {
+  AxiosHeaders,
+  AxiosInstance,
+  AxiosError,
+  InternalAxiosRequestConfig,
+  AxiosResponse
+} from 'axios'
 import type { ApiResponse } from '@/types'
 import { getLocale } from '@/i18n'
+import { getAuthToken } from '@/api/auth'
 
 // ==================== Axios Instance Configuration ====================
 
@@ -42,6 +49,28 @@ function onTokenRefreshed(token: string): void {
   refreshSubscribers = []
 }
 
+/** Reset refresh mutex after a fresh login so stale startup failures cannot block retries. */
+export function resetAuthRefreshState(): void {
+  isRefreshing = false
+  refreshSubscribers = []
+}
+
+function setAuthorizationHeader(
+  headers: InternalAxiosRequestConfig['headers'],
+  token: string
+): void {
+  if (!headers || !token) {
+    return
+  }
+  const value = `Bearer ${token}`
+  if (headers instanceof AxiosHeaders) {
+    headers.set('Authorization', value)
+    return
+  }
+  const record = headers as Record<string, string>
+  record.Authorization = value
+}
+
 // ==================== Request Interceptor ====================
 
 // Get user's timezone
@@ -55,10 +84,10 @@ const getUserTimezone = (): string => {
 
 apiClient.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
-    // Attach token from localStorage
-    const token = localStorage.getItem('auth_token')
-    if (token && config.headers) {
-      config.headers.Authorization = `Bearer ${token}`
+    // Attach token from shared auth storage (login + refresh both write here)
+    const token = getAuthToken()
+    if (token) {
+      setAuthorizationHeader(config.headers, token)
     }
 
     // Attach locale for backend translations
@@ -164,9 +193,7 @@ apiClient.interceptors.response.use(
                 if (newToken) {
                   // Mark as retried to prevent infinite loop if retry also returns 401
                   originalRequest._retry = true
-                  if (originalRequest.headers) {
-                    originalRequest.headers.Authorization = `Bearer ${newToken}`
-                  }
+                  setAuthorizationHeader(originalRequest.headers, newToken)
                   resolve(apiClient(originalRequest))
                 } else {
                   // Refresh failed, reject with original error
@@ -182,6 +209,7 @@ apiClient.interceptors.response.use(
 
           originalRequest._retry = true
           isRefreshing = true
+          const authTokenBeforeRefresh = localStorage.getItem('auth_token')
 
           try {
             // Call refresh endpoint directly to avoid circular dependency
@@ -204,14 +232,17 @@ apiClient.interceptors.response.use(
               localStorage.setItem('auth_token', access_token)
               localStorage.setItem('refresh_token', newRefreshToken)
               localStorage.setItem('token_expires_at', String(Date.now() + expires_in * 1000))
+              window.dispatchEvent(
+                new CustomEvent('auth-token-refreshed', {
+                  detail: { access_token, refresh_token: newRefreshToken, expires_in }
+                })
+              )
 
               // Notify subscribers with new token
               onTokenRefreshed(access_token)
 
               // Retry the original request with new token
-              if (originalRequest.headers) {
-                originalRequest.headers.Authorization = `Bearer ${access_token}`
-              }
+              setAuthorizationHeader(originalRequest.headers, access_token)
 
               isRefreshing = false
               return apiClient(originalRequest)
@@ -224,15 +255,18 @@ apiClient.interceptors.response.use(
             onTokenRefreshed('')
             isRefreshing = false
 
-            // Clear tokens and redirect to login
-            localStorage.removeItem('auth_token')
-            localStorage.removeItem('refresh_token')
-            localStorage.removeItem('auth_user')
-            localStorage.removeItem('token_expires_at')
-            sessionStorage.setItem('auth_expired', '1')
+            const authUnchanged = localStorage.getItem('auth_token') === authTokenBeforeRefresh
+            if (authUnchanged) {
+              // Clear tokens and redirect to login
+              localStorage.removeItem('auth_token')
+              localStorage.removeItem('refresh_token')
+              localStorage.removeItem('auth_user')
+              localStorage.removeItem('token_expires_at')
+              sessionStorage.setItem('auth_expired', '1')
 
-            if (!window.location.pathname.includes('/login')) {
-              window.location.href = '/login'
+              if (!window.location.pathname.includes('/login')) {
+                window.location.href = '/login'
+              }
             }
 
             return Promise.reject({
@@ -254,16 +288,16 @@ apiClient.interceptors.response.use(
               ? authHeader.length > 0
               : !!authHeader
 
-        localStorage.removeItem('auth_token')
-        localStorage.removeItem('refresh_token')
-        localStorage.removeItem('auth_user')
-        localStorage.removeItem('token_expires_at')
         if ((hasToken || sentAuth) && !isAuthEndpoint) {
+          localStorage.removeItem('auth_token')
+          localStorage.removeItem('refresh_token')
+          localStorage.removeItem('auth_user')
+          localStorage.removeItem('token_expires_at')
           sessionStorage.setItem('auth_expired', '1')
-        }
-        // Only redirect if not already on login page
-        if (!window.location.pathname.includes('/login')) {
-          window.location.href = '/login'
+          // Only redirect if not already on login page
+          if (!window.location.pathname.includes('/login')) {
+            window.location.href = '/login'
+          }
         }
       }
 

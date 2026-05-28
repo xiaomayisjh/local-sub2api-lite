@@ -26,6 +26,13 @@ vi.mock('@/stores/app', () => ({
   })
 }))
 
+vi.mock('@/stores/auth', () => ({
+  useAuthStore: () => ({
+    isAuthenticated: true,
+    isAdmin: true
+  })
+}))
+
 vi.mock('vue-router', () => ({
   useRouter: () => ({
     push: vi.fn()

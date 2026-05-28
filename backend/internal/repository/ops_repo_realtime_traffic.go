@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/repository/sqldialect"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
@@ -32,6 +33,9 @@ func (r *opsRepository) GetRealtimeTrafficSummary(ctx context.Context, filter *s
 	}
 	if window > time.Hour {
 		return nil, fmt.Errorf("window too large")
+	}
+	if sqldialect.UsesSQLite() {
+		return emptyOpsRealtimeTrafficSummary(filter), nil
 	}
 
 	usageJoin, usageWhere, usageArgs, next := buildUsageWhere(filter, start, end, 1)

@@ -23,6 +23,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
+	"github.com/Wei-Shaw/sub2api/internal/repository/sqldialect"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
 	gocache "github.com/patrickmn/go-cache"
@@ -126,6 +127,22 @@ func safeDateFormat(granularity string) string {
 		return f
 	}
 	return "YYYY-MM-DD"
+}
+
+func usageLogDateGroupExpr(column, granularity string) string {
+	if sqldialect.UsesSQLite() {
+		switch granularity {
+		case "hour":
+			return fmt.Sprintf("strftime('%%Y-%%m-%%d %%H:00', %s)", column)
+		case "week":
+			return fmt.Sprintf("strftime('%%Y-%%W', %s)", column)
+		case "month":
+			return fmt.Sprintf("strftime('%%Y-%%m', %s)", column)
+		default:
+			return fmt.Sprintf("strftime('%%Y-%%m-%%d', %s)", column)
+		}
+	}
+	return fmt.Sprintf("TO_CHAR(%s, '%s')", column, safeDateFormat(granularity))
 }
 
 // appendRawUsageLogModelWhereCondition keeps direct model filters on the raw model column for backward
@@ -245,7 +262,7 @@ const (
 )
 
 func NewUsageLogRepository(client *dbent.Client, sqlDB *sql.DB) service.UsageLogRepository {
-	return newUsageLogRepositoryWithSQL(client, sqlDB)
+	return newUsageLogRepositoryWithSQL(client, SQLExecutorFromDB(sqlDB))
 }
 
 func newUsageLogRepositoryWithSQL(client *dbent.Client, sqlq sqlExecutor) *usageLogRepository {
@@ -1721,12 +1738,64 @@ func (r *usageLogRepository) fillDashboardUsageStatsFromUsageLogs(ctx context.Co
 			COALESCE(SUM(account_cost) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz), 0) AS today_account_cost
 		FROM scoped
 	`
+	combinedStatsArgs := []any{startUTC, endUTC, todayUTC, todayEnd}
+	if sqldialect.UsesSQLite() {
+		scopedStart := minTime(startUTC, todayUTC)
+		scopedEnd := maxTime(endUTC, todayEnd)
+		combinedStatsQuery = `
+			WITH params AS (
+				SELECT
+					$1 AS scoped_start,
+					$2 AS scoped_end,
+					$3 AS range_start,
+					$4 AS range_end,
+					$5 AS today_start,
+					$6 AS today_end
+			),
+			scoped AS (
+				SELECT
+					ul.created_at,
+					ul.input_tokens,
+					ul.output_tokens,
+					ul.cache_creation_tokens,
+					ul.cache_read_tokens,
+					ul.total_cost,
+					ul.actual_cost,
+					COALESCE(ul.account_stats_cost, ul.total_cost) * COALESCE(ul.account_rate_multiplier, 1) AS account_cost,
+					COALESCE(ul.duration_ms, 0) AS duration_ms
+				FROM usage_logs ul
+				CROSS JOIN params
+				WHERE ul.created_at >= params.scoped_start AND ul.created_at < params.scoped_end
+			)
+			SELECT
+				COUNT(CASE WHEN scoped.created_at >= params.range_start AND scoped.created_at < params.range_end THEN 1 END) AS total_requests,
+				COALESCE(SUM(CASE WHEN scoped.created_at >= params.range_start AND scoped.created_at < params.range_end THEN scoped.input_tokens ELSE 0 END), 0) AS total_input_tokens,
+				COALESCE(SUM(CASE WHEN scoped.created_at >= params.range_start AND scoped.created_at < params.range_end THEN scoped.output_tokens ELSE 0 END), 0) AS total_output_tokens,
+				COALESCE(SUM(CASE WHEN scoped.created_at >= params.range_start AND scoped.created_at < params.range_end THEN scoped.cache_creation_tokens ELSE 0 END), 0) AS total_cache_creation_tokens,
+				COALESCE(SUM(CASE WHEN scoped.created_at >= params.range_start AND scoped.created_at < params.range_end THEN scoped.cache_read_tokens ELSE 0 END), 0) AS total_cache_read_tokens,
+				COALESCE(SUM(CASE WHEN scoped.created_at >= params.range_start AND scoped.created_at < params.range_end THEN scoped.total_cost ELSE 0 END), 0) AS total_cost,
+				COALESCE(SUM(CASE WHEN scoped.created_at >= params.range_start AND scoped.created_at < params.range_end THEN scoped.actual_cost ELSE 0 END), 0) AS total_actual_cost,
+				COALESCE(SUM(CASE WHEN scoped.created_at >= params.range_start AND scoped.created_at < params.range_end THEN scoped.account_cost ELSE 0 END), 0) AS total_account_cost,
+				COALESCE(SUM(CASE WHEN scoped.created_at >= params.range_start AND scoped.created_at < params.range_end THEN scoped.duration_ms ELSE 0 END), 0) AS total_duration_ms,
+				COUNT(CASE WHEN scoped.created_at >= params.today_start AND scoped.created_at < params.today_end THEN 1 END) AS today_requests,
+				COALESCE(SUM(CASE WHEN scoped.created_at >= params.today_start AND scoped.created_at < params.today_end THEN scoped.input_tokens ELSE 0 END), 0) AS today_input_tokens,
+				COALESCE(SUM(CASE WHEN scoped.created_at >= params.today_start AND scoped.created_at < params.today_end THEN scoped.output_tokens ELSE 0 END), 0) AS today_output_tokens,
+				COALESCE(SUM(CASE WHEN scoped.created_at >= params.today_start AND scoped.created_at < params.today_end THEN scoped.cache_creation_tokens ELSE 0 END), 0) AS today_cache_creation_tokens,
+				COALESCE(SUM(CASE WHEN scoped.created_at >= params.today_start AND scoped.created_at < params.today_end THEN scoped.cache_read_tokens ELSE 0 END), 0) AS today_cache_read_tokens,
+				COALESCE(SUM(CASE WHEN scoped.created_at >= params.today_start AND scoped.created_at < params.today_end THEN scoped.total_cost ELSE 0 END), 0) AS today_cost,
+				COALESCE(SUM(CASE WHEN scoped.created_at >= params.today_start AND scoped.created_at < params.today_end THEN scoped.actual_cost ELSE 0 END), 0) AS today_actual_cost,
+				COALESCE(SUM(CASE WHEN scoped.created_at >= params.today_start AND scoped.created_at < params.today_end THEN scoped.account_cost ELSE 0 END), 0) AS today_account_cost
+			FROM params
+			LEFT JOIN scoped ON 1 = 1
+		`
+		combinedStatsArgs = []any{scopedStart, scopedEnd, startUTC, endUTC, todayUTC, todayEnd}
+	}
 	var totalDurationMs int64
 	if err := scanSingleRow(
 		ctx,
 		r.sql,
 		combinedStatsQuery,
-		[]any{startUTC, endUTC, todayUTC, todayEnd},
+		combinedStatsArgs,
 		&stats.TotalRequests,
 		&stats.TotalInputTokens,
 		&stats.TotalOutputTokens,
@@ -1768,7 +1837,35 @@ func (r *usageLogRepository) fillDashboardUsageStatsFromUsageLogs(ctx context.Co
 			COUNT(DISTINCT CASE WHEN created_at >= $3::timestamptz AND created_at < $4::timestamptz THEN user_id END) AS hourly_active_users
 		FROM scoped
 	`
-	if err := scanSingleRow(ctx, r.sql, activeUsersQuery, []any{todayUTC, todayEnd, hourStart, hourEnd}, &stats.ActiveUsers, &stats.HourlyActiveUsers); err != nil {
+	activeUsersArgs := []any{todayUTC, todayEnd, hourStart, hourEnd}
+	if sqldialect.UsesSQLite() {
+		scopedStart := minTime(todayUTC, hourStart)
+		scopedEnd := maxTime(todayEnd, hourEnd)
+		activeUsersQuery = `
+			WITH params AS (
+				SELECT
+					$1 AS scoped_start,
+					$2 AS scoped_end,
+					$3 AS today_start,
+					$4 AS today_end,
+					$5 AS hour_start,
+					$6 AS hour_end
+			),
+			scoped AS (
+				SELECT ul.user_id, ul.created_at
+				FROM usage_logs ul
+				CROSS JOIN params
+				WHERE ul.created_at >= params.scoped_start AND ul.created_at < params.scoped_end
+			)
+			SELECT
+				COUNT(DISTINCT CASE WHEN scoped.created_at >= params.today_start AND scoped.created_at < params.today_end THEN scoped.user_id END) AS active_users,
+				COUNT(DISTINCT CASE WHEN scoped.created_at >= params.hour_start AND scoped.created_at < params.hour_end THEN scoped.user_id END) AS hourly_active_users
+			FROM params
+			LEFT JOIN scoped ON 1 = 1
+		`
+		activeUsersArgs = []any{scopedStart, scopedEnd, todayUTC, todayEnd, hourStart, hourEnd}
+	}
+	if err := scanSingleRow(ctx, r.sql, activeUsersQuery, activeUsersArgs, &stats.ActiveUsers, &stats.HourlyActiveUsers); err != nil {
 		return err
 	}
 
@@ -1940,10 +2037,15 @@ func (r *usageLogRepository) GetModelStatsAggregated(ctx context.Context, modelN
 // 性能优化：使用 GROUP BY 在数据库层按日期分组聚合，避免应用层循环分组统计
 func (r *usageLogRepository) GetDailyStatsAggregated(ctx context.Context, userID int64, startTime, endTime time.Time) (result []map[string]any, err error) {
 	tzName := resolveUsageStatsTimezone()
-	query := `
+	dateExpr := "TO_CHAR(created_at AT TIME ZONE $4, 'YYYY-MM-DD')"
+	args := []any{userID, startTime, endTime, tzName}
+	if sqldialect.UsesSQLite() {
+		dateExpr = usageLogDateGroupExpr("created_at", "day")
+		args = []any{userID, startTime, endTime}
+	}
+	query := fmt.Sprintf(`
 		SELECT
-			-- 使用应用时区分组，避免数据库会话时区导致日边界偏移。
-			TO_CHAR(created_at AT TIME ZONE $4, 'YYYY-MM-DD') as date,
+			%s as date,
 			COUNT(*) as total_requests,
 			COALESCE(SUM(input_tokens), 0) as total_input_tokens,
 			COALESCE(SUM(output_tokens), 0) as total_output_tokens,
@@ -1955,9 +2057,9 @@ func (r *usageLogRepository) GetDailyStatsAggregated(ctx context.Context, userID
 		WHERE user_id = $1 AND created_at >= $2 AND created_at < $3
 		GROUP BY 1
 		ORDER BY 1
-	`
+	`, dateExpr)
 
-	rows, err := r.sql.QueryContext(ctx, query, userID, startTime, endTime, tzName)
+	rows, err := r.sql.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -2118,19 +2220,47 @@ func (r *usageLogRepository) GetAccountWindowStatsBatch(ctx context.Context, acc
 		return result, nil
 	}
 
-	query := `
-		SELECT
-			account_id,
-			COUNT(*) as requests,
-			COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as tokens,
-			COALESCE(SUM(COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1)), 0) as cost,
-			COALESCE(SUM(total_cost), 0) as standard_cost,
-			COALESCE(SUM(actual_cost), 0) as user_cost
-		FROM usage_logs
-		WHERE account_id = ANY($1) AND created_at >= $2
-		GROUP BY account_id
-	`
-	rows, err := r.sql.QueryContext(ctx, query, pq.Array(accountIDs), startTime)
+	var (
+		query string
+		args  []any
+	)
+	if sqldialect.UsesSQLite() {
+		// SQLite 不支持 ANY($1) + pq.Array，改用 IN(?,?,...)
+		placeholders := make([]string, len(accountIDs))
+		args = make([]any, 0, len(accountIDs)+1)
+		for i, id := range accountIDs {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		args = append(args, startTime)
+		query = `
+			SELECT
+				account_id,
+				COUNT(*) as requests,
+				COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as tokens,
+				COALESCE(SUM(COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1)), 0) as cost,
+				COALESCE(SUM(total_cost), 0) as standard_cost,
+				COALESCE(SUM(actual_cost), 0) as user_cost
+			FROM usage_logs
+			WHERE account_id IN (` + strings.Join(placeholders, ",") + `) AND created_at >= ?
+			GROUP BY account_id
+		`
+	} else {
+		query = `
+			SELECT
+				account_id,
+				COUNT(*) as requests,
+				COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as tokens,
+				COALESCE(SUM(COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1)), 0) as cost,
+				COALESCE(SUM(total_cost), 0) as standard_cost,
+				COALESCE(SUM(actual_cost), 0) as user_cost
+			FROM usage_logs
+			WHERE account_id = ANY($1) AND created_at >= $2
+			GROUP BY account_id
+		`
+		args = []any{pq.Array(accountIDs), startTime}
+	}
+	rows, err := r.sql.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -2171,20 +2301,43 @@ func (r *usageLogRepository) GetGeminiUsageTotalsBatch(ctx context.Context, acco
 		return result, nil
 	}
 
-	query := `
-		SELECT
-			account_id,
-			COALESCE(SUM(CASE WHEN LOWER(COALESCE(model, '')) LIKE '%flash%' OR LOWER(COALESCE(model, '')) LIKE '%lite%' THEN 1 ELSE 0 END), 0) AS flash_requests,
-			COALESCE(SUM(CASE WHEN LOWER(COALESCE(model, '')) LIKE '%flash%' OR LOWER(COALESCE(model, '')) LIKE '%lite%' THEN 0 ELSE 1 END), 0) AS pro_requests,
-			COALESCE(SUM(CASE WHEN LOWER(COALESCE(model, '')) LIKE '%flash%' OR LOWER(COALESCE(model, '')) LIKE '%lite%' THEN (input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens) ELSE 0 END), 0) AS flash_tokens,
-			COALESCE(SUM(CASE WHEN LOWER(COALESCE(model, '')) LIKE '%flash%' OR LOWER(COALESCE(model, '')) LIKE '%lite%' THEN 0 ELSE (input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens) END), 0) AS pro_tokens,
-			COALESCE(SUM(CASE WHEN LOWER(COALESCE(model, '')) LIKE '%flash%' OR LOWER(COALESCE(model, '')) LIKE '%lite%' THEN actual_cost ELSE 0 END), 0) AS flash_cost,
-			COALESCE(SUM(CASE WHEN LOWER(COALESCE(model, '')) LIKE '%flash%' OR LOWER(COALESCE(model, '')) LIKE '%lite%' THEN 0 ELSE actual_cost END), 0) AS pro_cost
-		FROM usage_logs
-		WHERE account_id = ANY($1) AND created_at >= $2 AND created_at < $3
-		GROUP BY account_id
-	`
-	rows, err := r.sql.QueryContext(ctx, query, pq.Array(accountIDs), startTime, endTime)
+	inClause, idArgs := arrayInClause("account_id", accountIDs, "$1")
+	var (
+		query string
+		args  []any
+	)
+	if sqldialect.UsesSQLite() {
+		query = `
+			SELECT
+				account_id,
+				COALESCE(SUM(CASE WHEN LOWER(COALESCE(model, '')) LIKE '%flash%' OR LOWER(COALESCE(model, '')) LIKE '%lite%' THEN 1 ELSE 0 END), 0) AS flash_requests,
+				COALESCE(SUM(CASE WHEN LOWER(COALESCE(model, '')) LIKE '%flash%' OR LOWER(COALESCE(model, '')) LIKE '%lite%' THEN 0 ELSE 1 END), 0) AS pro_requests,
+				COALESCE(SUM(CASE WHEN LOWER(COALESCE(model, '')) LIKE '%flash%' OR LOWER(COALESCE(model, '')) LIKE '%lite%' THEN (input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens) ELSE 0 END), 0) AS flash_tokens,
+				COALESCE(SUM(CASE WHEN LOWER(COALESCE(model, '')) LIKE '%flash%' OR LOWER(COALESCE(model, '')) LIKE '%lite%' THEN 0 ELSE (input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens) END), 0) AS pro_tokens,
+				COALESCE(SUM(CASE WHEN LOWER(COALESCE(model, '')) LIKE '%flash%' OR LOWER(COALESCE(model, '')) LIKE '%lite%' THEN actual_cost ELSE 0 END), 0) AS flash_cost,
+				COALESCE(SUM(CASE WHEN LOWER(COALESCE(model, '')) LIKE '%flash%' OR LOWER(COALESCE(model, '')) LIKE '%lite%' THEN 0 ELSE actual_cost END), 0) AS pro_cost
+			FROM usage_logs
+			WHERE ` + inClause + ` AND created_at >= ? AND created_at < ?
+			GROUP BY account_id
+		`
+		args = append(append([]any{}, idArgs...), startTime, endTime)
+	} else {
+		query = `
+			SELECT
+				account_id,
+				COALESCE(SUM(CASE WHEN LOWER(COALESCE(model, '')) LIKE '%flash%' OR LOWER(COALESCE(model, '')) LIKE '%lite%' THEN 1 ELSE 0 END), 0) AS flash_requests,
+				COALESCE(SUM(CASE WHEN LOWER(COALESCE(model, '')) LIKE '%flash%' OR LOWER(COALESCE(model, '')) LIKE '%lite%' THEN 0 ELSE 1 END), 0) AS pro_requests,
+				COALESCE(SUM(CASE WHEN LOWER(COALESCE(model, '')) LIKE '%flash%' OR LOWER(COALESCE(model, '')) LIKE '%lite%' THEN (input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens) ELSE 0 END), 0) AS flash_tokens,
+				COALESCE(SUM(CASE WHEN LOWER(COALESCE(model, '')) LIKE '%flash%' OR LOWER(COALESCE(model, '')) LIKE '%lite%' THEN 0 ELSE (input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens) END), 0) AS pro_tokens,
+				COALESCE(SUM(CASE WHEN LOWER(COALESCE(model, '')) LIKE '%flash%' OR LOWER(COALESCE(model, '')) LIKE '%lite%' THEN actual_cost ELSE 0 END), 0) AS flash_cost,
+				COALESCE(SUM(CASE WHEN LOWER(COALESCE(model, '')) LIKE '%flash%' OR LOWER(COALESCE(model, '')) LIKE '%lite%' THEN 0 ELSE actual_cost END), 0) AS pro_cost
+			FROM usage_logs
+			WHERE ` + inClause + ` AND created_at >= $2 AND created_at < $3
+			GROUP BY account_id
+		`
+		args = append(append([]any{}, idArgs...), startTime, endTime)
+	}
+	rows, err := r.sql.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -2236,7 +2389,7 @@ type APIKeyUsageTrendPoint = usagestats.APIKeyUsageTrendPoint
 
 // GetAPIKeyUsageTrend returns usage trend data grouped by API key and date
 func (r *usageLogRepository) GetAPIKeyUsageTrend(ctx context.Context, startTime, endTime time.Time, granularity string, limit int) (results []APIKeyUsageTrendPoint, err error) {
-	dateFormat := safeDateFormat(granularity)
+	dateExpr := usageLogDateGroupExpr("u.created_at", granularity)
 
 	query := fmt.Sprintf(`
 		WITH top_keys AS (
@@ -2248,7 +2401,7 @@ func (r *usageLogRepository) GetAPIKeyUsageTrend(ctx context.Context, startTime,
 			LIMIT $3
 		)
 		SELECT
-			TO_CHAR(u.created_at, '%s') as date,
+			%s as date,
 			u.api_key_id,
 			COALESCE(k.name, '') as key_name,
 			COUNT(*) as requests,
@@ -2259,7 +2412,7 @@ func (r *usageLogRepository) GetAPIKeyUsageTrend(ctx context.Context, startTime,
 		  AND u.created_at >= $4 AND u.created_at < $5
 		GROUP BY date, u.api_key_id, k.name
 		ORDER BY date ASC, tokens DESC
-	`, dateFormat)
+	`, dateExpr)
 
 	rows, err := r.sql.QueryContext(ctx, query, startTime, endTime, limit, startTime, endTime)
 	if err != nil {
@@ -2291,7 +2444,7 @@ func (r *usageLogRepository) GetAPIKeyUsageTrend(ctx context.Context, startTime,
 
 // GetUserUsageTrend returns usage trend data grouped by user and date
 func (r *usageLogRepository) GetUserUsageTrend(ctx context.Context, startTime, endTime time.Time, granularity string, limit int) (results []UserUsageTrendPoint, err error) {
-	dateFormat := safeDateFormat(granularity)
+	dateExpr := usageLogDateGroupExpr("u.created_at", granularity)
 
 	query := fmt.Sprintf(`
 		WITH top_users AS (
@@ -2303,7 +2456,7 @@ func (r *usageLogRepository) GetUserUsageTrend(ctx context.Context, startTime, e
 			LIMIT $3
 		)
 		SELECT
-			TO_CHAR(u.created_at, '%s') as date,
+			%s as date,
 			u.user_id,
 			COALESCE(us.email, '') as email,
 			COALESCE(us.username, '') as username,
@@ -2317,7 +2470,7 @@ func (r *usageLogRepository) GetUserUsageTrend(ctx context.Context, startTime, e
 		  AND u.created_at >= $4 AND u.created_at < $5
 		GROUP BY date, u.user_id, us.email, us.username
 		ORDER BY date ASC, tokens DESC
-	`, dateFormat)
+	`, dateExpr)
 
 	rows, err := r.sql.QueryContext(ctx, query, startTime, endTime, limit, startTime, endTime)
 	if err != nil {
@@ -2685,11 +2838,11 @@ func (r *usageLogRepository) GetAPIKeyDashboardStats(ctx context.Context, apiKey
 
 // GetUserUsageTrendByUserID 获取指定用户的使用趋势
 func (r *usageLogRepository) GetUserUsageTrendByUserID(ctx context.Context, userID int64, startTime, endTime time.Time, granularity string) (results []TrendDataPoint, err error) {
-	dateFormat := safeDateFormat(granularity)
+	dateExpr := usageLogDateGroupExpr("created_at", granularity)
 
 	query := fmt.Sprintf(`
 		SELECT
-			TO_CHAR(created_at, '%s') as date,
+			%s as date,
 			COUNT(*) as requests,
 			COALESCE(SUM(input_tokens), 0) as input_tokens,
 			COALESCE(SUM(output_tokens), 0) as output_tokens,
@@ -2702,7 +2855,7 @@ func (r *usageLogRepository) GetUserUsageTrendByUserID(ctx context.Context, user
 		WHERE user_id = $1 AND created_at >= $2 AND created_at < $3
 		GROUP BY date
 		ORDER BY date ASC
-	`, dateFormat)
+	`, dateExpr)
 
 	rows, err := r.sql.QueryContext(ctx, query, userID, startTime, endTime)
 	if err != nil {
@@ -2882,6 +3035,70 @@ func (r *usageLogRepository) GetBatchUserUsageStats(ctx context.Context, userIDs
 		result[id] = &BatchUserUsageStats{UserID: id}
 	}
 
+	today := timezone.Today()
+
+	if sqldialect.UsesSQLite() {
+		// SQLite 不支持 FILTER (WHERE ...) 与 pq.Array($1) 数组语法，改写为 CASE + IN(?,?...)。
+		placeholders := make([]string, 0, len(normalizedUserIDs))
+		args := []any{startTime, endTime, today}
+		for i, id := range normalizedUserIDs {
+			placeholders = append(placeholders, fmt.Sprintf("$%d", i+4))
+			args = append(args, id)
+		}
+		query := fmt.Sprintf(`
+			WITH params AS (
+				SELECT $1 AS start_time, $2 AS end_time, $3 AS today_start
+			)
+			SELECT
+				ul.user_id,
+				`+usageLogEffectivePlatformExpr+` as platform,
+				COALESCE(SUM(CASE WHEN ul.created_at >= params.start_time AND ul.created_at < params.end_time THEN ul.actual_cost ELSE 0 END), 0) as total_cost,
+				COALESCE(SUM(CASE WHEN ul.created_at >= params.today_start THEN ul.actual_cost ELSE 0 END), 0) as today_cost
+			FROM usage_logs ul
+			LEFT JOIN groups g ON g.id = ul.group_id
+			LEFT JOIN accounts a ON a.id = ul.account_id
+			CROSS JOIN params
+			WHERE ul.user_id IN (%s)
+			  AND ul.created_at >= CASE WHEN params.start_time < params.today_start THEN params.start_time ELSE params.today_start END
+			  AND `+usageLogSuccessFilterUL+`
+			GROUP BY ul.user_id, `+usageLogEffectivePlatformExpr+`
+		`, strings.Join(placeholders, ","))
+		rows, err := r.sql.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var userID int64
+			var platform sql.NullString
+			var total float64
+			var todayTotal float64
+			if err := rows.Scan(&userID, &platform, &total, &todayTotal); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			stats, ok := result[userID]
+			if !ok {
+				continue
+			}
+			stats.TotalActualCost += total
+			stats.TodayActualCost += todayTotal
+			if platform.Valid && platform.String != "" {
+				stats.ByPlatform = append(stats.ByPlatform, PlatformUsage{
+					Platform:        platform.String,
+					TotalActualCost: total,
+					TodayActualCost: todayTotal,
+				})
+			}
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
+
 	// GROUP BY (user_id, effective_platform) 一次查询同时得到总值与按平台拆分。
 	// 应用层把同一 user_id 的多行累加为总值，并把非空 platform 行收集到 ByPlatform。
 	query := `
@@ -2898,7 +3115,6 @@ func (r *usageLogRepository) GetBatchUserUsageStats(ctx context.Context, userIDs
 		  AND ` + usageLogSuccessFilterUL + `
 		GROUP BY ul.user_id, ` + usageLogEffectivePlatformExpr + `
 	`
-	today := timezone.Today()
 	rows, err := r.sql.QueryContext(ctx, query, pq.Array(normalizedUserIDs), startTime, endTime, today)
 	if err != nil {
 		return nil, err
@@ -2960,6 +3176,50 @@ func (r *usageLogRepository) GetBatchAPIKeyUsageStats(ctx context.Context, apiKe
 		result[id] = &BatchAPIKeyUsageStats{APIKeyID: id}
 	}
 
+	if sqldialect.UsesSQLite() {
+		args := []any{startTime, endTime, timezone.Today()}
+		placeholders := make([]string, 0, len(normalizedAPIKeyIDs))
+		for i, id := range normalizedAPIKeyIDs {
+			placeholders = append(placeholders, fmt.Sprintf("$%d", i+4))
+			args = append(args, id)
+		}
+		query := fmt.Sprintf(`
+		WITH params AS (
+			SELECT $1 AS start_time, $2 AS end_time, $3 AS today_start
+		)
+		SELECT
+			api_key_id,
+			COALESCE(SUM(CASE WHEN created_at >= params.start_time AND created_at < params.end_time THEN actual_cost ELSE 0 END), 0) as total_cost,
+			COALESCE(SUM(CASE WHEN created_at >= params.today_start THEN actual_cost ELSE 0 END), 0) as today_cost
+		FROM usage_logs
+		CROSS JOIN params
+		WHERE api_key_id IN (%s)
+		  AND created_at >= CASE WHEN params.start_time < params.today_start THEN params.start_time ELSE params.today_start END
+		GROUP BY api_key_id
+	`, strings.Join(placeholders, ","))
+		rows, err := r.sql.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var apiKeyID int64
+			var total float64
+			var todayTotal float64
+			if err := rows.Scan(&apiKeyID, &total, &todayTotal); err != nil {
+				return nil, err
+			}
+			if stats, ok := result[apiKeyID]; ok {
+				stats.TotalActualCost = total
+				stats.TodayActualCost = todayTotal
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
+
 	query := `
 		SELECT
 			api_key_id,
@@ -3007,11 +3267,11 @@ func (r *usageLogRepository) GetUsageTrendWithFilters(ctx context.Context, start
 		}
 	}
 
-	dateFormat := safeDateFormat(granularity)
+	dateExpr := usageLogDateGroupExpr("created_at", granularity)
 
 	query := fmt.Sprintf(`
 		SELECT
-			TO_CHAR(created_at, '%s') as date,
+			%s as date,
 			COUNT(*) as requests,
 			COALESCE(SUM(input_tokens), 0) as input_tokens,
 			COALESCE(SUM(output_tokens), 0) as output_tokens,
@@ -3022,7 +3282,7 @@ func (r *usageLogRepository) GetUsageTrendWithFilters(ctx context.Context, start
 			COALESCE(SUM(actual_cost), 0) as actual_cost
 		FROM usage_logs
 		WHERE created_at >= $1 AND created_at < $2
-	`, dateFormat)
+	`, dateExpr)
 
 	args := []any{startTime, endTime}
 	if userID > 0 {
@@ -3084,6 +3344,9 @@ func shouldUsePreaggregatedTrend(granularity string, userID, apiKeyID, accountID
 }
 
 func (r *usageLogRepository) getUsageTrendFromAggregates(ctx context.Context, startTime, endTime time.Time, granularity string) (results []TrendDataPoint, err error) {
+	if sqldialect.UsesSQLite() {
+		return nil, nil
+	}
 	dateFormat := safeDateFormat(granularity)
 	query := ""
 	args := []any{startTime, endTime}
@@ -3754,9 +4017,10 @@ func (r *usageLogRepository) GetAccountUsageStats(ctx context.Context, accountID
 		daysCount = 30
 	}
 
-	query := `
+	dateExpr := usageLogDateGroupExpr("created_at", "day")
+	query := fmt.Sprintf(`
 		SELECT
-			TO_CHAR(created_at, 'YYYY-MM-DD') as date,
+			%s as date,
 			COUNT(*) as requests,
 			COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as tokens,
 			COALESCE(SUM(total_cost), 0) as cost,
@@ -3766,7 +4030,7 @@ func (r *usageLogRepository) GetAccountUsageStats(ctx context.Context, accountID
 		WHERE account_id = $1 AND created_at >= $2 AND created_at < $3
 		GROUP BY date
 		ORDER BY date ASC
-	`
+	`, dateExpr)
 
 	rows, err := r.sql.QueryContext(ctx, query, accountID, startTime, endTime)
 	if err != nil {

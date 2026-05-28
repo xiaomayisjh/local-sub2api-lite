@@ -523,7 +523,6 @@ const props = withDefaults(
 )
 
 const { t } = useI18n()
-const desktopViewportQuery = '(min-width: 768px)'
 
 const unmounted = ref(false)
 onBeforeUnmount(() => { unmounted.value = true })
@@ -533,15 +532,10 @@ const activeQueryLoading = ref(false)
 const error = ref<string | null>(null)
 const usageInfo = ref<AccountUsageInfo | null>(null)
 const rootRef = ref<HTMLElement | null>(null)
-const isDesktopViewport = ref(
-  typeof window === 'undefined' ? true : window.matchMedia(desktopViewportQuery).matches
-)
 const hasEnteredViewport = ref(false)
 const pendingAutoLoad = ref(false)
 const pendingAutoLoadSource = ref<'passive' | 'active' | undefined>(undefined)
 
-let desktopViewportMediaQuery: MediaQueryList | null = null
-let desktopViewportListener: ((event: MediaQueryListEvent) => void) | null = null
 let visibilityObserver: IntersectionObserver | null = null
 
 // Show usage windows for OAuth and Setup Token accounts
@@ -593,8 +587,8 @@ const shouldAutoLoadUsageOnMount = computed(() => {
   return shouldFetchUsage.value
 })
 
-const shouldLazyLoadOnMobile = computed(() => {
-  return shouldFetchUsage.value && !isDesktopViewport.value
+const shouldLazyLoadUsage = computed(() => {
+  return shouldFetchUsage.value
 })
 
 // Antigravity quota types (用于 API 返回的数据)
@@ -1025,7 +1019,9 @@ const loadUsage = async (options?: { source?: 'passive' | 'active'; bypassCache?
   error.value = null
 
   try {
-    const fetchFn = () => adminAPI.accounts.getUsage(props.account.id, options?.source)
+    const fetchFn = () => options?.source
+      ? adminAPI.accounts.getUsage(props.account.id, options.source)
+      : adminAPI.accounts.getUsage(props.account.id)
     const result = await enqueueUsageRequest(props.account, fetchFn)
     if (!unmounted.value) {
       usageInfo.value = result
@@ -1053,7 +1049,7 @@ const flushPendingAutoLoad = () => {
 
 const requestAutoLoad = (source?: 'passive' | 'active') => {
   if (!shouldFetchUsage.value) return
-  if (shouldLazyLoadOnMobile.value && !hasEnteredViewport.value) {
+  if (shouldLazyLoadUsage.value && !hasEnteredViewport.value) {
     pendingAutoLoad.value = true
     pendingAutoLoadSource.value = source
     return
@@ -1070,7 +1066,7 @@ const detachVisibilityObserver = () => {
 
 const attachVisibilityObserver = () => {
   detachVisibilityObserver()
-  if (!shouldLazyLoadOnMobile.value || hasEnteredViewport.value) return
+  if (!shouldLazyLoadUsage.value || hasEnteredViewport.value) return
   if (typeof window === 'undefined' || typeof IntersectionObserver === 'undefined') {
     hasEnteredViewport.value = true
     flushPendingAutoLoad()
@@ -1190,19 +1186,6 @@ const formatKeyUserCost = computed(() => {
 })
 
 onMounted(() => {
-  if (typeof window !== 'undefined') {
-    desktopViewportMediaQuery = window.matchMedia(desktopViewportQuery)
-    isDesktopViewport.value = desktopViewportMediaQuery.matches
-    desktopViewportListener = (event: MediaQueryListEvent) => {
-      isDesktopViewport.value = event.matches
-    }
-    if (typeof desktopViewportMediaQuery.addEventListener === 'function') {
-      desktopViewportMediaQuery.addEventListener('change', desktopViewportListener)
-    } else {
-      desktopViewportMediaQuery.addListener(desktopViewportListener)
-    }
-  }
-
   if (!shouldAutoLoadUsageOnMount.value) return
   const source = isAnthropicOAuthOrSetupToken.value ? 'passive' : undefined
   requestAutoLoad(source)
@@ -1212,7 +1195,16 @@ watch(openAIUsageRefreshKey, (nextKey, prevKey) => {
   if (!prevKey || nextKey === prevKey) return
   if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return
 
-  requestAutoLoad()
+  _usageCache.delete(props.account.id)
+  if (shouldLazyLoadUsage.value && !hasEnteredViewport.value) {
+    pendingAutoLoad.value = true
+    pendingAutoLoadSource.value = undefined
+    attachVisibilityObserver()
+    return
+  }
+  loadUsage({ bypassCache: true }).catch((e) => {
+    console.error('Failed to refresh OpenAI usage after account update:', e)
+  })
 })
 
 watch(
@@ -1223,6 +1215,12 @@ watch(
 
     const source = isAnthropicOAuthOrSetupToken.value ? 'passive' : undefined
     _usageCache.delete(props.account.id)
+    if (shouldLazyLoadUsage.value && !hasEnteredViewport.value) {
+      pendingAutoLoad.value = true
+      pendingAutoLoadSource.value = source
+      attachVisibilityObserver()
+      return
+    }
     loadUsage({ source, bypassCache: true }).catch((e) => {
       console.error('Failed to refresh usage after manual refresh:', e)
     })
@@ -1230,9 +1228,9 @@ watch(
 )
 
 watch(
-  [rootRef, shouldLazyLoadOnMobile],
+  [rootRef, shouldLazyLoadUsage],
   () => {
-    if (shouldLazyLoadOnMobile.value) {
+    if (shouldLazyLoadUsage.value) {
       attachVisibilityObserver()
       return
     }
@@ -1241,27 +1239,7 @@ watch(
   { immediate: true, flush: 'post' }
 )
 
-watch(isDesktopViewport, (isDesktop) => {
-  if (isDesktop) {
-    detachVisibilityObserver()
-    hasEnteredViewport.value = true
-    flushPendingAutoLoad()
-    return
-  }
-  hasEnteredViewport.value = false
-  attachVisibilityObserver()
-})
-
 onUnmounted(() => {
   detachVisibilityObserver()
-  if (desktopViewportMediaQuery && desktopViewportListener) {
-    if (typeof desktopViewportMediaQuery.removeEventListener === 'function') {
-      desktopViewportMediaQuery.removeEventListener('change', desktopViewportListener)
-    } else {
-      desktopViewportMediaQuery.removeListener(desktopViewportListener)
-    }
-  }
-  desktopViewportListener = null
-  desktopViewportMediaQuery = null
 })
 </script>

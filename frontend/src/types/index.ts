@@ -225,6 +225,7 @@ export interface PublicSettings {
   github_oauth_enabled: boolean
   google_oauth_enabled: boolean
   backend_mode_enabled: boolean
+  run_mode?: 'standard' | 'simple' | 'local'
   version: string
   balance_low_notify_enabled: boolean
   account_quota_notify_enabled: boolean
@@ -240,11 +241,11 @@ export interface AuthResponse {
   refresh_token?: string  // New: Refresh Token for token renewal
   expires_in?: number     // New: Access Token expiry time in seconds
   token_type: string
-  user: User & { run_mode?: 'standard' | 'simple' }
+  user: User & { run_mode?: 'standard' | 'simple' | 'local' }
 }
 
 export interface CurrentUserResponse extends User {
-  run_mode?: 'standard' | 'simple'
+  run_mode?: 'standard' | 'simple' | 'local'
 }
 
 // ==================== Subscription Types ====================
@@ -1102,7 +1103,7 @@ export interface AdminDataAccount {
 }
 
 export interface AdminDataImportError {
-  kind: 'proxy' | 'account'
+  kind: 'proxy' | 'account' | 'file'
   name?: string
   proxy_key?: string
   message: string

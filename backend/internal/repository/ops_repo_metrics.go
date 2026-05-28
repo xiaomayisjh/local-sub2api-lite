@@ -6,12 +6,16 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/repository/sqldialect"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
 func (r *opsRepository) InsertSystemMetrics(ctx context.Context, input *service.OpsInsertSystemMetricsInput) error {
 	if r == nil || r.db == nil {
 		return fmt.Errorf("nil ops repository")
+	}
+	if sqldialect.UsesSQLite() {
+		return nil
 	}
 	if input == nil {
 		return fmt.Errorf("nil input")
@@ -153,6 +157,9 @@ func (r *opsRepository) GetLatestSystemMetrics(ctx context.Context, windowMinute
 	if r == nil || r.db == nil {
 		return nil, fmt.Errorf("nil ops repository")
 	}
+	if sqldialect.UsesSQLite() {
+		return nil, sql.ErrNoRows
+	}
 	if windowMinutes <= 0 {
 		windowMinutes = 1
 	}
@@ -290,6 +297,9 @@ func (r *opsRepository) UpsertJobHeartbeat(ctx context.Context, input *service.O
 	if r == nil || r.db == nil {
 		return fmt.Errorf("nil ops repository")
 	}
+	if sqldialect.UsesSQLite() {
+		return nil
+	}
 	if input == nil {
 		return fmt.Errorf("nil input")
 	}
@@ -345,6 +355,9 @@ ON CONFLICT (job_name) DO UPDATE SET
 func (r *opsRepository) ListJobHeartbeats(ctx context.Context) ([]*service.OpsJobHeartbeat, error) {
 	if r == nil || r.db == nil {
 		return nil, fmt.Errorf("nil ops repository")
+	}
+	if sqldialect.UsesSQLite() {
+		return []*service.OpsJobHeartbeat{}, nil
 	}
 
 	q := `

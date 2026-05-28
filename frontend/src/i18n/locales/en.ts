@@ -1414,6 +1414,11 @@ export default {
       failedToLoad: 'Failed to load dashboard statistics'
     },
 
+    local: {
+      title: 'Local Settings',
+      description: 'Local desktop runtime settings'
+    },
+
     backup: {
       title: 'Database Backup',
       description: 'Full database backup to S3-compatible storage with scheduled backup and restore',
@@ -2899,12 +2904,13 @@ export default {
       dataExported: 'Data exported successfully',
       dataExportFailed: 'Failed to export data',
       dataImportTitle: 'Import Data',
-      dataImportHint: 'Upload the exported JSON file to import accounts and proxies.',
-      dataImportWarning: 'Import will create new accounts/proxies; groups must be bound manually. Ensure existing data does not conflict.',
+      dataImportHint: 'Upload one or more exported JSON files to import accounts and proxies.',
+      dataImportWarning: 'Import will create new accounts/proxies and bind accounts to the matching platform default group by default. Ensure existing data does not conflict.',
       dataImportFile: 'Data file',
       dataImportButton: 'Start Import',
       dataImporting: 'Importing...',
       dataImportSelectFile: 'Please select a data file',
+      dataImportSelectedFiles: '{count} JSON files selected',
       dataImportParseFailed: 'Failed to parse data file',
       dataImportFailed: 'Data import failed',
       dataImportResult: 'Import Result',
@@ -3157,9 +3163,14 @@ export default {
       bulkSchedulableResultUnknown: 'Bulk scheduling result incomplete. Please retry or refresh.',
       bulkActions: {
         selected: '{count} account(s) selected',
+        filteredScope: '{count} account(s) in current filters',
         selectCurrentPage: 'Select this page',
+        selectAllFiltered: 'Select all filtered ({count})',
+        selectAllFilteredSuccess: 'Selected {count} account(s)',
+        selectAllFilteredFailed: 'Failed to select all filtered accounts',
         clear: 'Clear selection',
         edit: 'Bulk Edit',
+        editFiltered: 'Edit All Filtered',
         delete: 'Bulk Delete',
         enableScheduling: 'Enable Scheduling',
         disableScheduling: 'Disable Scheduling',
@@ -3599,7 +3610,11 @@ export default {
           failedToValidateRT: 'Failed to validate refresh token',
           errors: {
             OPENAI_OAUTH_PROXY_REQUIRED:
-              'No proxy is configured and this server could not reach OpenAI directly, so the OpenAI OAuth request failed. Select a proxy that can access OpenAI and retry; if the authorization code has expired, regenerate the authorization URL.'
+              'No proxy is configured and this server could not reach OpenAI directly, so the OpenAI OAuth request failed. Select a proxy that can access OpenAI and retry; if the authorization code has expired, regenerate the authorization URL.',
+            OPENAI_OAUTH_REQUEST_FAILED:
+              'OpenAI OAuth could not connect to auth.openai.com. Check that this account is bound to a proxy that can access OpenAI, then retry.',
+            OPENAI_OAUTH_TOKEN_REFRESH_FAILED:
+              'OpenAI rejected the token refresh request. Check whether the refresh token is still valid or re-authorize the account.'
           },
           // Refresh Token auth
           refreshTokenAuth: 'Manual RT Input',
@@ -4008,12 +4023,13 @@ export default {
       dataImport: 'Import',
       dataExportSelected: 'Export Selected',
       dataImportTitle: 'Import Proxies',
-      dataImportHint: 'Upload the exported proxy JSON file to import proxies in bulk.',
+      dataImportHint: 'Upload one or more exported proxy JSON files to import proxies in bulk.',
       dataImportWarning: 'Import will create or reuse proxies, keep their status, and trigger latency checks after completion.',
       dataImportFile: 'Data File',
       dataImportButton: 'Start Import',
       dataImporting: 'Importing...',
       dataImportSelectFile: 'Please select a data file',
+      dataImportSelectedFiles: '{count} JSON files selected',
       dataImportParseFailed: 'Failed to parse data',
       dataImportFailed: 'Failed to import data',
       dataImportResult: 'Import Result',

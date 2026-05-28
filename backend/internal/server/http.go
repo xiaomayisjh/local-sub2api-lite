@@ -53,7 +53,7 @@ func ProvideRouter(
 		if err := r.SetTrustedProxies(nil); err != nil {
 			log.Printf("Failed to disable trusted proxies: %v", err)
 		}
-		if cfg.Server.Mode == "release" {
+		if cfg.Server.Mode == "release" && !cfg.IsLocalMode() {
 			log.Printf("Warning: server.trusted_proxies is empty in release mode; client IP trust chain is disabled")
 		}
 	}

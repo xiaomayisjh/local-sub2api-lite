@@ -1435,6 +1435,11 @@ export default {
       failedToLoad: '加载仪表盘数据失败'
     },
 
+    local: {
+      title: '本地设置',
+      description: '本地桌面运行参数'
+    },
+
     backup: {
       title: '数据库备份',
       description: '全量数据库备份到 S3 兼容存储，支持定时备份与恢复',
@@ -2975,12 +2980,13 @@ export default {
       dataExported: '数据导出成功',
       dataExportFailed: '数据导出失败',
       dataImportTitle: '导入数据',
-      dataImportHint: '上传导出的 JSON 文件以批量导入账号与代理。',
-      dataImportWarning: '导入将创建新账号与代理，分组需手工绑定；请确认已有数据不会冲突。',
+      dataImportHint: '上传一个或多个导出的 JSON 文件以批量导入账号与代理。',
+      dataImportWarning: '导入将创建新账号与代理，并默认绑定到对应平台的默认分组；请确认已有数据不会冲突。',
       dataImportFile: '数据文件',
       dataImportButton: '开始导入',
       dataImporting: '导入中...',
       dataImportSelectFile: '请选择数据文件',
+      dataImportSelectedFiles: '已选择 {count} 个 JSON 文件',
       dataImportParseFailed: '数据解析失败',
       dataImportFailed: '数据导入失败',
       dataImportResult: '导入结果',
@@ -3304,9 +3310,14 @@ export default {
       bulkSchedulableResultUnknown: '批量调度结果不完整，请稍后重试或刷新列表',
       bulkActions: {
         selected: '已选择 {count} 个账号',
+        filteredScope: '当前筛选共 {count} 个账号',
         selectCurrentPage: '本页全选',
+        selectAllFiltered: '全选当前筛选 ({count})',
+        selectAllFilteredSuccess: '已选中 {count} 个账号',
+        selectAllFilteredFailed: '全选筛选账号失败',
         clear: '清除选择',
         edit: '批量编辑账号',
+        editFiltered: '编辑当前筛选全部账号',
         delete: '批量删除',
         enableScheduling: '批量启用调度',
         disableScheduling: '批量停止调度',
@@ -3734,7 +3745,11 @@ export default {
           failedToValidateRT: '验证 Refresh Token 失败',
           errors: {
             OPENAI_OAUTH_PROXY_REQUIRED:
-              '未设置代理，当前服务器无法直连 OpenAI，导致 OpenAI OAuth 请求失败。请先选择可访问 OpenAI 的代理后重试；如果授权码已失效，请重新生成授权链接。'
+              '未设置代理，当前服务器无法直连 OpenAI，导致 OpenAI OAuth 请求失败。请先选择可访问 OpenAI 的代理后重试；如果授权码已失效，请重新生成授权链接。',
+            OPENAI_OAUTH_REQUEST_FAILED:
+              'OpenAI OAuth 无法连接 auth.openai.com。请确认该账号已绑定可访问 OpenAI 的代理后重试。',
+            OPENAI_OAUTH_TOKEN_REFRESH_FAILED:
+              'OpenAI 拒绝了 Token 刷新请求。请检查 Refresh Token 是否仍有效，或重新授权该账号。'
           },
           // Refresh Token auth
           refreshTokenAuth: '手动输入 RT',
@@ -4105,12 +4120,13 @@ export default {
       dataImport: '导入',
       dataExportSelected: '导出选中',
       dataImportTitle: '导入代理',
-      dataImportHint: '上传代理导出的 JSON 文件以批量导入代理。',
+      dataImportHint: '上传一个或多个代理导出的 JSON 文件以批量导入代理。',
       dataImportWarning: '导入将创建或复用代理，保留状态并在完成后自动触发延迟检测。',
       dataImportFile: '数据文件',
       dataImportButton: '开始导入',
       dataImporting: '导入中...',
       dataImportSelectFile: '请选择数据文件',
+      dataImportSelectedFiles: '已选择 {count} 个 JSON 文件',
       dataImportParseFailed: '数据解析失败',
       dataImportFailed: '数据导入失败',
       dataImportResult: '导入结果',

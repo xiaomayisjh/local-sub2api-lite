@@ -549,6 +549,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/local',
+    name: 'AdminLocalSettings',
+    component: () => import('@/views/admin/LocalSettingsView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Local Settings',
+      titleKey: 'admin.local.title',
+      descriptionKey: 'admin.local.description'
+    }
+  },
+  {
     path: '/admin/risk-control',
     name: 'AdminRiskControl',
     component: () => import('@/views/admin/RiskControlView.vue'),
@@ -726,6 +738,7 @@ router.beforeEach(async (to, _from, next) => {
   // Restore auth state from localStorage on first navigation (page refresh)
   if (!authInitialized) {
     authStore.checkAuth()
+    await authStore.waitForSessionRestore()
     authInitialized = true
   }
 
@@ -821,6 +834,34 @@ router.beforeEach(async (to, _from, next) => {
     const riskControlEnabled = appStore.cachedPublicSettings?.risk_control_enabled === true
     if (!riskControlEnabled) {
       next(authStore.isAdmin ? '/admin/settings' : '/dashboard')
+      return
+    }
+  }
+
+  if (authStore.isLocalMode && authStore.isAdmin && to.path === '/dashboard') {
+    next('/admin/dashboard')
+    return
+  }
+
+  // 本地桌面模式：禁止 SaaS 用户侧与支付相关路由
+  if (authStore.isLocalMode) {
+    const localBlockedPrefixes = [
+      '/register',
+      '/payment',
+      '/subscriptions',
+      '/affiliate',
+      '/redeem',
+      '/admin/subscriptions',
+      '/admin/redeem',
+      '/admin/payment'
+    ]
+    const isOAuthCallback = to.path.startsWith('/auth/') && to.path !== '/login'
+    if (isOAuthCallback || localBlockedPrefixes.some((path) => to.path.startsWith(path))) {
+      next('/admin/dashboard')
+      return
+    }
+    if (to.path === '/' || to.path === '/home') {
+      next('/admin/dashboard')
       return
     }
   }

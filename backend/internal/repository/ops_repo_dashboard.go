@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/repository/sqldialect"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
@@ -31,6 +32,9 @@ func (r *opsRepository) GetDashboardOverview(ctx context.Context, filter *servic
 	mode := filter.QueryMode
 	if !mode.IsValid() {
 		mode = service.OpsQueryModeRaw
+	}
+	if sqldialect.UsesSQLite() {
+		return emptyOpsDashboardOverview(filter), nil
 	}
 
 	switch mode {

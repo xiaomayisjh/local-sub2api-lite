@@ -623,10 +623,13 @@ export interface BatchOperationResult {
  * @param accountIds - Array of account IDs
  * @returns Batch operation result
  */
-export async function batchClearError(accountIds: number[]): Promise<BatchOperationResult> {
-  const { data } = await apiClient.post<BatchOperationResult>('/admin/accounts/batch-clear-error', {
-    account_ids: accountIds
-  })
+export async function batchClearError(
+  accountIdsOrPayload: number[] | { filters: Record<string, unknown> }
+): Promise<BatchOperationResult> {
+  const payload = Array.isArray(accountIdsOrPayload)
+    ? { account_ids: accountIdsOrPayload }
+    : accountIdsOrPayload
+  const { data } = await apiClient.post<BatchOperationResult>('/admin/accounts/batch-clear-error', payload)
   return data
 }
 
@@ -635,10 +638,13 @@ export async function batchClearError(accountIds: number[]): Promise<BatchOperat
  * @param accountIds - Array of account IDs
  * @returns Batch operation result
  */
-export async function batchRefresh(accountIds: number[]): Promise<BatchOperationResult> {
-  const { data } = await apiClient.post<BatchOperationResult>('/admin/accounts/batch-refresh', {
-    account_ids: accountIds,
-  }, {
+export async function batchRefresh(
+  accountIdsOrPayload: number[] | { filters: Record<string, unknown> }
+): Promise<BatchOperationResult> {
+  const payload = Array.isArray(accountIdsOrPayload)
+    ? { account_ids: accountIdsOrPayload }
+    : accountIdsOrPayload
+  const { data } = await apiClient.post<BatchOperationResult>('/admin/accounts/batch-refresh', payload, {
     timeout: 120000  // 120s timeout for large batch refreshes
   })
   return data

@@ -399,6 +399,10 @@ func (s *AuthService) VerifyTurnstile(ctx context.Context, token string, remoteI
 		return nil // 服务未配置则跳过验证
 	}
 
+	if !required && (s.settingService == nil || !s.settingService.IsTurnstileEnabled(ctx)) {
+		return nil
+	}
+
 	if !required && s.settingService != nil && s.settingService.IsTurnstileEnabled(ctx) && s.settingService.GetTurnstileSecretKey(ctx) == "" {
 		logger.LegacyPrintf("service.auth", "%s", "[Auth] Turnstile enabled but secret key not configured")
 	}
@@ -1573,7 +1577,8 @@ func hashToken(token string) string {
 	return hex.EncodeToString(hash[:])
 }
 
-func resolvedTokenVersion(user *User) int64 {
+// ResolvedTokenVersion returns the token_version value embedded in JWT claims.
+func ResolvedTokenVersion(user *User) int64 {
 	if user == nil {
 		return 0
 	}
@@ -1585,4 +1590,8 @@ func resolvedTokenVersion(user *User) int64 {
 	sum := sha256.Sum256([]byte(material))
 	fingerprint := int64(binary.BigEndian.Uint64(sum[:8]) & 0x7fffffffffffffff)
 	return user.TokenVersion ^ fingerprint
+}
+
+func resolvedTokenVersion(user *User) int64 {
+	return ResolvedTokenVersion(user)
 }

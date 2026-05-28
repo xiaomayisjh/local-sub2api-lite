@@ -1,6 +1,9 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { adminAPI } from '@/api'
+import { getAuthToken } from '@/api/auth'
+import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
 import type { CustomMenuItem } from '@/types'
 
 export const useAdminSettingsStore = defineStore('adminSettings', () => {
@@ -51,16 +54,21 @@ export const useAdminSettingsStore = defineStore('adminSettings', () => {
   const paymentEnabled = ref(readCachedBool('payment_enabled_cached', false))
   const customMenuItems = ref<CustomMenuItem[]>([])
 
+  const readErrorStatus = (err: unknown): number | undefined => {
+    const error = err as { status?: number; response?: { status?: number } }
+    return error.status ?? error.response?.status
+  }
+
   async function fetch(force = false): Promise<void> {
+    if (!getAuthToken()) return
     if (loaded.value && !force) return
     if (loading.value) return
 
     loading.value = true
     try {
-      const [settings, paymentConfigResp] = await Promise.all([
-        adminAPI.settings.getSettings(),
-        adminAPI.payment.getConfig()
-      ])
+      const authStore = useAuthStore()
+      const appStore = useAppStore()
+      const settings = await adminAPI.settings.getSettings()
       opsMonitoringEnabled.value = settings.ops_monitoring_enabled ?? true
       writeCachedBool('ops_monitoring_enabled_cached', opsMonitoringEnabled.value)
 
@@ -72,8 +80,25 @@ export const useAdminSettingsStore = defineStore('adminSettings', () => {
 
       customMenuItems.value = Array.isArray(settings.custom_menu_items) ? settings.custom_menu_items : []
 
-      paymentEnabled.value = paymentConfigResp.data?.enabled ?? false
+      const localMode =
+        authStore.isLocalMode || appStore.cachedPublicSettings?.run_mode === 'local'
+      paymentEnabled.value = localMode ? false : settings.payment_enabled === true
       writeCachedBool('payment_enabled_cached', paymentEnabled.value)
+
+      if (paymentEnabled.value) {
+        try {
+          const paymentConfigResp = await adminAPI.payment.getConfig()
+          paymentEnabled.value = paymentConfigResp.data?.enabled ?? false
+          writeCachedBool('payment_enabled_cached', paymentEnabled.value)
+        } catch (err) {
+          if (readErrorStatus(err) === 404) {
+            paymentEnabled.value = false
+            writeCachedBool('payment_enabled_cached', false)
+          } else {
+            console.error('[adminSettings] Failed to fetch payment config:', err)
+          }
+        }
+      }
 
       loaded.value = true
     } catch (err) {

@@ -6,17 +6,18 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/repository/sqldialect"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
 type schedulerOutboxRepository struct {
-	db *sql.DB
+	db *RebindDB
 }
 
 const schedulerOutboxDedupWindow = time.Second
 
 func NewSchedulerOutboxRepository(db *sql.DB) service.SchedulerOutboxRepository {
-	return &schedulerOutboxRepository{db: db}
+	return &schedulerOutboxRepository{db: WrapDB(db)}
 }
 
 func (r *schedulerOutboxRepository) ListAfter(ctx context.Context, afterID int64, limit int) ([]service.SchedulerOutboxEvent, error) {
@@ -80,7 +81,7 @@ func (r *schedulerOutboxRepository) MaxID(ctx context.Context) (int64, error) {
 }
 
 func enqueueSchedulerOutbox(ctx context.Context, exec sqlExecutor, eventType string, accountID *int64, groupID *int64, payload any) error {
-	if exec == nil {
+	if exec == nil || sqldialect.UsesSQLite() {
 		return nil
 	}
 	var payloadArg any

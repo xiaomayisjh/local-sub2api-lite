@@ -814,7 +814,15 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		AffiliateEnabled: settings[SettingKeyAffiliateEnabled] == "true",
 
 		RiskControlEnabled: settings[SettingKeyRiskControlEnabled] == "true",
+		RunMode:            s.publicRunMode(),
 	}, nil
+}
+
+func (s *SettingService) publicRunMode() string {
+	if s != nil && s.cfg != nil && strings.TrimSpace(s.cfg.RunMode) != "" {
+		return strings.TrimSpace(s.cfg.RunMode)
+	}
+	return config.RunModeStandard
 }
 
 // channelMonitorIntervalMin / channelMonitorIntervalMax bound the default interval
@@ -1068,6 +1076,7 @@ type PublicSettingsInjectionPayload struct {
 	AvailableChannelsEnabled             bool `json:"available_channels_enabled"`
 	AffiliateEnabled                     bool `json:"affiliate_enabled"`
 	RiskControlEnabled                   bool `json:"risk_control_enabled"`
+	RunMode                              string `json:"run_mode"`
 }
 
 // GetPublicSettingsForInjection returns public settings in a format suitable for HTML injection.
@@ -1130,6 +1139,7 @@ func (s *SettingService) GetPublicSettingsForInjection(ctx context.Context) (any
 		AvailableChannelsEnabled:             settings.AvailableChannelsEnabled,
 		AffiliateEnabled:                     settings.AffiliateEnabled,
 		RiskControlEnabled:                   settings.RiskControlEnabled,
+		RunMode:                              settings.RunMode,
 	}, nil
 }
 

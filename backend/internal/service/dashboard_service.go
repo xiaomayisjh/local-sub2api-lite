@@ -124,6 +124,14 @@ func (s *DashboardService) GetDashboardStats(ctx context.Context) (*usagestats.D
 	return stats, nil
 }
 
+// InvalidateCache 主动清空仪表盘统计缓存，用户主动刷新时使用。
+func (s *DashboardService) InvalidateCache(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	s.evictDashboardStatsCache(nil)
+}
+
 func (s *DashboardService) GetUsageTrendWithFilters(ctx context.Context, startTime, endTime time.Time, granularity string, userID, apiKeyID, accountID, groupID int64, model string, requestType *int16, stream *bool, billingType *int8) ([]usagestats.TrendDataPoint, error) {
 	trend, err := s.usageRepo.GetUsageTrendWithFilters(ctx, startTime, endTime, granularity, userID, apiKeyID, accountID, groupID, model, requestType, stream, billingType)
 	if err != nil {

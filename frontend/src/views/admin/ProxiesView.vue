@@ -1157,8 +1157,10 @@ const closeCreateModal = () => {
   batchParseResult.proxies = []
 }
 
-const handleDataImported = () => {
-  showImportData.value = false
+const handleDataImported = (payload?: { close?: boolean }) => {
+  if (payload?.close !== false) {
+    showImportData.value = false
+  }
   loadProxies()
 }
 

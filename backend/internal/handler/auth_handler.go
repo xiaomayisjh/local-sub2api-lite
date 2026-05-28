@@ -8,6 +8,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/emailaddr"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
@@ -71,7 +72,7 @@ type SendVerifyCodeResponse struct {
 
 // LoginRequest represents the login request payload
 type LoginRequest struct {
-	Email          string `json:"email" binding:"required,email"`
+	Email          string `json:"email" binding:"required"`
 	Password       string `json:"password" binding:"required"`
 	TurnstileToken string `json:"turnstile_token"`
 }
@@ -82,7 +83,23 @@ type AuthResponse struct {
 	RefreshToken string    `json:"refresh_token,omitempty"` // 新增：Refresh Token
 	ExpiresIn    int       `json:"expires_in,omitempty"`    // 新增：Access Token有效期（秒）
 	TokenType    string    `json:"token_type"`
-	User         *dto.User `json:"user"`
+	User         *AuthUser `json:"user"`
+}
+
+type AuthUser struct {
+	*dto.User
+	RunMode string `json:"run_mode,omitempty"`
+}
+
+func (h *AuthHandler) authUserFromService(user *service.User) *AuthUser {
+	runMode := config.RunModeStandard
+	if h != nil && h.cfg != nil {
+		runMode = h.cfg.RunMode
+	}
+	return &AuthUser{
+		User:    dto.UserFromService(user),
+		RunMode: runMode,
+	}
 }
 
 func ensureLoginUserActive(user *service.User) error {
@@ -115,7 +132,7 @@ func (h *AuthHandler) respondWithTokenPair(c *gin.Context, user *service.User) {
 		response.Success(c, AuthResponse{
 			AccessToken: token,
 			TokenType:   "Bearer",
-			User:        dto.UserFromService(user),
+			User:        h.authUserFromService(user),
 		})
 		return
 	}
@@ -124,7 +141,7 @@ func (h *AuthHandler) respondWithTokenPair(c *gin.Context, user *service.User) {
 		RefreshToken: tokenPair.RefreshToken,
 		ExpiresIn:    tokenPair.ExpiresIn,
 		TokenType:    "Bearer",
-		User:         dto.UserFromService(user),
+		User:         h.authUserFromService(user),
 	})
 }
 
@@ -221,6 +238,10 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if !emailaddr.ValidForLogin(req.Email) {
+		response.BadRequest(c, "Invalid email format")
 		return
 	}
 

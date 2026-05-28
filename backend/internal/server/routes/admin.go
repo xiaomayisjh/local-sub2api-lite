@@ -2,6 +2,8 @@
 package routes
 
 import (
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	adminhandler "github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 
@@ -13,10 +15,17 @@ func RegisterAdminRoutes(
 	v1 *gin.RouterGroup,
 	h *handler.Handlers,
 	adminAuth middleware.AdminAuthMiddleware,
+	cfg *config.Config,
 ) {
 	admin := v1.Group("/admin")
 	admin.Use(gin.HandlerFunc(adminAuth))
 	{
+		if cfg != nil && cfg.IsLocalMode() {
+			localHandler := adminhandler.NewLocalHandler(cfg)
+			admin.GET("/local/info", localHandler.GetLocalInfo)
+			admin.GET("/local/port/check", localHandler.CheckLocalPort)
+			admin.PUT("/local/port", localHandler.UpdateLocalPort)
+		}
 		// 仪表盘
 		registerDashboardRoutes(admin, h)
 

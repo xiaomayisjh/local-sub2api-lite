@@ -97,3 +97,37 @@ func TestAuthService_VerifyTurnstileForRegister_NoSkipWhenEmailVerifyDisabled(t 
 	require.Equal(t, 1, verifier.called)
 	require.Equal(t, "turnstile-token", verifier.lastToken)
 }
+
+func TestAuthService_VerifyTurnstile_SkipsWhenOptionalAndDisabled(t *testing.T) {
+	verifier := &turnstileVerifierSpy{}
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Mode: "release",
+		},
+		Turnstile: config.TurnstileConfig{
+			Required: false,
+		},
+	}
+	settingService := NewSettingService(&settingRepoStub{values: map[string]string{
+		SettingKeyTurnstileEnabled: "false",
+	}}, cfg)
+	turnstileService := NewTurnstileService(settingService, verifier)
+	service := NewAuthService(
+		nil,
+		&userRepoStub{},
+		nil,
+		nil,
+		cfg,
+		settingService,
+		nil,
+		turnstileService,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+
+	err := service.VerifyTurnstile(context.Background(), "", "127.0.0.1")
+	require.NoError(t, err)
+	require.Equal(t, 0, verifier.called)
+}

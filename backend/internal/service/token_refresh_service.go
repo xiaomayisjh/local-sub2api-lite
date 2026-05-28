@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 )
 
 // tokenRefreshTempUnschedDuration token 刷新重试耗尽后临时不可调度的持续时间
@@ -218,7 +219,7 @@ func (s *TokenRefreshService) processRefresh() {
 				if errors.Is(err, errRefreshSkipped) {
 					skipped++
 				} else {
-					slog.Warn("token_refresh.account_refresh_failed",
+					slog.Log(ctx, refreshFailureLogLevel(err), "token_refresh.account_refresh_failed",
 						"account_id", account.ID,
 						"account_name", account.Name,
 						"error", err,
@@ -317,7 +318,7 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 		}
 
 		lastErr = err
-		slog.Warn("token_refresh.retry_attempt_failed",
+		slog.Log(ctx, refreshAttemptLogLevel(err, attempt, s.cfg.MaxRetries), "token_refresh.retry_attempt_failed",
 			"account_id", account.ID,
 			"attempt", attempt,
 			"max_retries", s.cfg.MaxRetries,
@@ -333,7 +334,7 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 	}
 
 	// 可重试错误耗尽：临时标记账号不可调度，避免请求路径反复命中已知失败的账号
-	slog.Warn("token_refresh.retry_exhausted",
+	slog.Log(ctx, refreshFailureLogLevel(lastErr), "token_refresh.retry_exhausted",
 		"account_id", account.ID,
 		"platform", account.Platform,
 		"max_retries", s.cfg.MaxRetries,
@@ -454,6 +455,37 @@ func isNonRetryableRefreshError(err error) bool {
 		}
 	}
 	return false
+}
+
+func refreshAttemptLogLevel(err error, attempt, maxRetries int) slog.Level {
+	if isExpectedRetryableOAuthRefreshError(err) && attempt < maxRetries {
+		return slog.LevelDebug
+	}
+	return refreshFailureLogLevel(err)
+}
+
+func refreshFailureLogLevel(err error) slog.Level {
+	if isExpectedRetryableOAuthRefreshError(err) {
+		return slog.LevelInfo
+	}
+	return slog.LevelWarn
+}
+
+func isExpectedRetryableOAuthRefreshError(err error) bool {
+	appErr := infraerrors.FromError(err)
+	if appErr == nil {
+		return false
+	}
+	switch appErr.Reason {
+	case "OPENAI_OAUTH_CLIENT_INIT_FAILED",
+		"OPENAI_OAUTH_REQUEST_FAILED",
+		"OPENAI_OAUTH_PROXY_REQUIRED",
+		"OPENAI_OAUTH_TOKEN_EXCHANGE_FAILED",
+		"OPENAI_OAUTH_TOKEN_REFRESH_FAILED":
+		return true
+	default:
+		return false
+	}
 }
 
 // ensureOpenAIPrivacy 检查 OpenAI OAuth 账号是否已设置 privacy_mode，

@@ -76,7 +76,7 @@ func (s *SchedulerSnapshotService) Start() {
 	}()
 
 	interval := s.outboxPollInterval()
-	if s.outboxRepo != nil && interval > 0 {
+	if s.outboxRepo != nil && interval > 0 && !s.cfg.UsesSQLite() {
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()

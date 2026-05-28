@@ -67,14 +67,14 @@ const DataTableStub = {
 }
 
 const AccountBulkActionsBarStub = {
-  props: ['selectedIds'],
+  props: ['selectedIds', 'total'],
   emits: ['edit-filtered'],
-  template: '<button data-test="edit-filtered" @click="$emit(\'edit-filtered\')">edit filtered</button>'
+  template: '<button data-test="edit-filtered" :data-total="String(total)" @click="$emit(\'edit-filtered\')">edit filtered</button>'
 }
 
 const BulkEditAccountModalStub = {
   props: ['show', 'target'],
-  template: '<div data-test="bulk-edit-modal" :data-show="String(show)" :data-target-mode="target?.mode ?? \'\'"></div>'
+  template: '<div data-test="bulk-edit-modal" :data-show="String(show)" :data-target-mode="target?.mode ?? \'\'" :data-platforms="(target?.selectedPlatforms ?? []).join(\',\')" :data-types="(target?.selectedTypes ?? []).join(\',\')"></div>'
 }
 
 describe('admin AccountsView bulk edit scope', () => {
@@ -88,11 +88,21 @@ describe('admin AccountsView bulk edit scope', () => {
     getAllGroups.mockReset()
 
     listAccounts.mockResolvedValue({
-      items: [],
-      total: 0,
+      items: [
+        {
+          id: 1,
+          name: 'account',
+          platform: 'openai',
+          type: 'oauth',
+          status: 'active',
+          groups: [],
+          group_ids: []
+        }
+      ],
+      total: 42,
       page: 1,
       page_size: 20,
-      pages: 0
+      pages: 3
     })
     listWithEtag.mockResolvedValue({
       notModified: true,
@@ -146,7 +156,10 @@ describe('admin AccountsView bulk edit scope', () => {
     await wrapper.get('[data-test="edit-filtered"]').trigger('click')
     await flushPromises()
 
+    expect(wrapper.get('[data-test="edit-filtered"]').attributes('data-total')).toBe('42')
     expect(wrapper.get('[data-test="bulk-edit-modal"]').attributes('data-show')).toBe('true')
     expect(wrapper.get('[data-test="bulk-edit-modal"]').attributes('data-target-mode')).toBe('filtered')
+    expect(wrapper.get('[data-test="bulk-edit-modal"]').attributes('data-platforms')).toBe('')
+    expect(wrapper.get('[data-test="bulk-edit-modal"]').attributes('data-types')).toBe('')
   })
 })

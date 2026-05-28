@@ -174,6 +174,7 @@
       <template #table>
         <AccountBulkActionsBar
           :selected-ids="selIds"
+          :total="pagination.total"
           @delete="handleBulkDelete"
           @reset-status="handleBulkResetStatus"
           @refresh-token="handleBulkRefreshToken"
@@ -181,6 +182,7 @@
           @edit-filtered="openBulkEditFiltered"
           @clear="clearSelection"
           @select-page="selectPage"
+          @select-all-filtered="handleSelectAllFiltered"
           @toggle-schedulable="handleBulkToggleSchedulable"
         />
         <div ref="accountTableRef" class="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -344,7 +346,7 @@
     <CreateAccountModal :show="showCreate" :proxies="proxies" :groups="groups" @close="showCreate = false" @created="reload" />
     <EditAccountModal :show="showEdit" :account="edAcc" :proxies="proxies" :groups="groups" @close="showEdit = false" @updated="handleAccountUpdated" />
     <ReAuthAccountModal :show="showReAuth" :account="reAuthAcc" @close="closeReAuthModal" @reauthorized="handleAccountUpdated" />
-    <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" />
+    <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" @finished="handleTestFinished" />
     <AccountStatsModal :show="showStats" :account="statsAcc" @close="closeStatsModal" />
     <ScheduledTestsPanel :show="showSchedulePanel" :account-id="scheduleAcc?.id ?? null" :model-options="scheduleModelOptions" @close="closeSchedulePanel" />
     <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" />
@@ -410,6 +412,7 @@ import Icon from '@/components/icons/Icon.vue'
 import ErrorPassthroughRulesModal from '@/components/admin/ErrorPassthroughRulesModal.vue'
 import TLSFingerprintProfilesModal from '@/components/admin/TLSFingerprintProfilesModal.vue'
 import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
+import { extractI18nErrorMessage } from '@/utils/apiError'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
 import type { Account, AccountPlatform, AccountType, Proxy as AccountProxy, AdminGroup, WindowStats, ClaudeModel } from '@/types'
 
@@ -1202,6 +1205,33 @@ const toggleSelectAllVisible = (event: Event) => {
   const target = event.target as HTMLInputElement
   toggleVisible(target.checked)
 }
+const isSelectingAllFiltered = ref(false)
+const handleSelectAllFiltered = async () => {
+  if (pagination.total <= 0 || isSelectingAllFiltered.value) return
+  isSelectingAllFiltered.value = true
+  try {
+    const filters = buildBulkEditFilterSnapshot()
+    // 服务端最大 200 / 页（参考 ParsePagination），分批拉取直到拿到全部 ID。
+    const pageSize = 200
+    const collectedIds = new Set<number>(selIds.value)
+    let page = 1
+    let total = 0
+    do {
+      const response = await adminAPI.accounts.list(page, pageSize, { ...filters, lite: '1' })
+      response.items.forEach((account) => collectedIds.add(account.id))
+      total = response.total
+      if (response.items.length === 0) break
+      page += 1
+    } while (collectedIds.size < total && page < 50)
+    setSelectedIds(Array.from(collectedIds))
+    appStore.showSuccess(t('admin.accounts.bulkActions.selectAllFilteredSuccess', { count: collectedIds.size }))
+  } catch (error) {
+    console.error('Failed to select all filtered accounts:', error)
+    appStore.showError(t('admin.accounts.bulkActions.selectAllFilteredFailed'))
+  } finally {
+    isSelectingAllFiltered.value = false
+  }
+}
 const handleBulkDelete = async () => { if(!confirm(t('common.confirm'))) return; try { await Promise.all(selIds.value.map(id => adminAPI.accounts.delete(id))); clearSelection(); reload() } catch (error) { console.error('Failed to bulk delete accounts:', error) } }
 const handleBulkResetStatus = async () => {
   if (!confirm(t('common.confirm'))) return
@@ -1358,6 +1388,19 @@ const collectSelectionMetadata = (rows: Account[]) => {
   return { selectedPlatforms, selectedTypes }
 }
 
+const buildFilteredBulkEditMetadata = (rows: Account[], total: number, filters: ReturnType<typeof buildBulkEditFilterSnapshot>) => {
+  const { selectedPlatforms, selectedTypes } = collectSelectionMetadata(rows)
+  const previewCoversAll = rows.length >= total
+  return {
+    selectedPlatforms: previewCoversAll || filters.platform
+      ? selectedPlatforms
+      : [],
+    selectedTypes: previewCoversAll || filters.type
+      ? selectedTypes
+      : []
+  }
+}
+
 const openBulkEditSelected = () => {
   bulkEditTarget.value = {
     mode: 'selected',
@@ -1371,7 +1414,7 @@ const openBulkEditSelected = () => {
 const openBulkEditFiltered = async () => {
   const filters = buildBulkEditFilterSnapshot()
   const preview = await adminAPI.accounts.list(1, 100, filters)
-  const { selectedPlatforms, selectedTypes } = collectSelectionMetadata(preview.items)
+  const { selectedPlatforms, selectedTypes } = buildFilteredBulkEditMetadata(preview.items, preview.total, filters)
   bulkEditTarget.value = {
     mode: 'filtered',
     filters,
@@ -1388,7 +1431,12 @@ const handleBulkUpdated = () => {
   clearSelection()
   reload()
 }
-const handleDataImported = () => { showImportData.value = false; reload() }
+const handleDataImported = (payload?: { close?: boolean }) => {
+  if (payload?.close !== false) {
+    showImportData.value = false
+  }
+  reload()
+}
 const ACCOUNT_UNGROUPED_GROUP_QUERY_VALUE = 'ungrouped'
 const ACCOUNT_PRIVACY_MODE_UNSET_QUERY_VALUE = '__unset__'
 const buildAccountQueryFilters = () => ({
@@ -1530,6 +1578,18 @@ const closeTestModal = () => { showTest.value = false; testingAcc.value = null }
 const closeStatsModal = () => { showStats.value = false; statsAcc.value = null }
 const closeReAuthModal = () => { showReAuth.value = false; reAuthAcc.value = null }
 const handleTest = (a: Account) => { testingAcc.value = a; showTest.value = true }
+// 测试结束后立即同步账号最新状态（后端在测试成功/失败后都会更新数据库）。
+const handleTestFinished = async (_payload: { success: boolean }) => {
+  const target = testingAcc.value
+  if (!target) return
+  try {
+    const updated = await adminAPI.accounts.getById(target.id)
+    patchAccountInList(updated)
+    enterAutoRefreshSilentWindow()
+  } catch (error) {
+    console.error('Failed to refresh account after test:', error)
+  }
+}
 const handleViewStats = (a: Account) => { statsAcc.value = a; showStats.value = true }
 const handleSchedule = async (a: Account) => {
   scheduleAcc.value = a
@@ -1550,7 +1610,24 @@ const handleRefresh = async (a: Account) => {
     patchAccountInList(updated)
     enterAutoRefreshSilentWindow()
   } catch (error) {
-    console.error('Failed to refresh credentials:', error)
+    if (import.meta.env.DEV) {
+      console.debug('Failed to refresh credentials:', error)
+    }
+    appStore.showError(
+      extractI18nErrorMessage(
+        error,
+        t,
+        'admin.accounts.oauth.openai.errors',
+        t('admin.accounts.oauth.openai.failedToValidateRT')
+      )
+    )
+    // 刷新失败时后端会持久化错误状态，立即拉取最新账号让 UI 反映 status=error。
+    try {
+      const refreshed = await adminAPI.accounts.getById(a.id)
+      patchAccountInList(refreshed)
+    } catch (fetchErr) {
+      console.error('Failed to refetch account after refresh error:', fetchErr)
+    }
   }
 }
 const handleRecoverState = async (a: Account) => {

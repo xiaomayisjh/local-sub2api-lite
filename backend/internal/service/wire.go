@@ -244,7 +244,9 @@ func ProvideOpsMetricsCollector(
 	cfg *config.Config,
 ) *OpsMetricsCollector {
 	collector := NewOpsMetricsCollector(opsRepo, settingRepo, accountRepo, concurrencyService, db, redisClient, cfg)
-	collector.Start()
+	if cfg == nil || !cfg.UsesSQLite() {
+		collector.Start()
+	}
 	return collector
 }
 
@@ -257,7 +259,9 @@ func ProvideOpsAggregationService(
 	cfg *config.Config,
 ) *OpsAggregationService {
 	svc := NewOpsAggregationService(opsRepo, settingRepo, db, redisClient, cfg)
-	svc.Start()
+	if cfg == nil || !cfg.UsesSQLite() {
+		svc.Start()
+	}
 	return svc
 }
 
@@ -270,7 +274,9 @@ func ProvideOpsAlertEvaluatorService(
 	cfg *config.Config,
 ) *OpsAlertEvaluatorService {
 	svc := NewOpsAlertEvaluatorService(opsService, opsRepo, emailService, redisClient, cfg)
-	svc.Start()
+	if cfg == nil || !cfg.UsesSQLite() {
+		svc.Start()
+	}
 	return svc
 }
 
@@ -289,17 +295,21 @@ func ProvideOpsCleanupService(
 	opsService *OpsService,
 ) *OpsCleanupService {
 	svc := NewOpsCleanupService(opsRepo, db, redisClient, cfg, channelMonitorSvc, settingRepo)
-	svc.Start()
+	if cfg == nil || !cfg.UsesSQLite() {
+		svc.Start()
+	}
 	if opsService != nil {
 		opsService.SetCleanupReloader(svc)
 	}
 	return svc
 }
 
-func ProvideOpsSystemLogSink(opsRepo OpsRepository) *OpsSystemLogSink {
+func ProvideOpsSystemLogSink(opsRepo OpsRepository, cfg *config.Config) *OpsSystemLogSink {
 	sink := NewOpsSystemLogSink(opsRepo)
-	sink.Start()
-	logger.SetSink(sink)
+	if cfg == nil || !cfg.UsesSQLite() {
+		sink.Start()
+		logger.SetSink(sink)
+	}
 	return sink
 }
 
@@ -372,7 +382,9 @@ func ProvideOpsScheduledReportService(
 	cfg *config.Config,
 ) *OpsScheduledReportService {
 	svc := NewOpsScheduledReportService(opsService, userService, emailService, redisClient, cfg)
-	svc.Start()
+	if cfg == nil || !cfg.UsesSQLite() {
+		svc.Start()
+	}
 	return svc
 }
 

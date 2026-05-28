@@ -20,8 +20,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/userallowedgroup"
 	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	"github.com/Wei-Shaw/sub2api/internal/repository/sqldialect"
 	"github.com/Wei-Shaw/sub2api/internal/service"
-	"github.com/lib/pq"
 
 	entsql "entgo.io/ent/dialect/sql"
 )
@@ -32,7 +32,7 @@ type userRepository struct {
 }
 
 func NewUserRepository(client *dbent.Client, sqlDB *sql.DB) service.UserRepository {
-	return newUserRepositoryWithSQL(client, sqlDB)
+	return newUserRepositoryWithSQL(client, SQLExecutorFromDB(sqlDB))
 }
 
 func newUserRepositoryWithSQL(client *dbent.Client, sqlq sqlExecutor) *userRepository {
@@ -584,14 +584,16 @@ func (r *userRepository) GetLatestUsedAtByUserIDs(ctx context.Context, userIDs [
 		return nil, fmt.Errorf("sql executor is not configured")
 	}
 
-	const query = `
+	const queryTemplate = `
 		SELECT user_id, MAX(created_at) AS last_used_at
 		FROM usage_logs
-		WHERE user_id = ANY($1)
+		WHERE %s
 		GROUP BY user_id
 	`
+	inClause, args := arrayInClause("user_id", userIDs, "$1")
+	query := fmt.Sprintf(queryTemplate, inClause)
 
-	rows, err := r.sql.QueryContext(ctx, query, pq.Array(userIDs))
+	rows, err := r.sql.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -745,9 +747,10 @@ func (r *userRepository) BatchSetConcurrency(ctx context.Context, userIDs []int6
 	if value < 0 {
 		value = 0
 	}
-	res, err := r.sql.ExecContext(ctx,
-		"UPDATE users SET concurrency = $1, updated_at = NOW() WHERE id = ANY($2) AND deleted_at IS NULL",
-		value, pq.Array(userIDs))
+	inClause, idArgs := arrayInClause("id", userIDs, "$2")
+	query := "UPDATE users SET concurrency = $1, updated_at = " + sqldialect.NowExpr() + " WHERE " + inClause + " AND deleted_at IS NULL"
+	args := append([]any{value}, idArgs...)
+	res, err := r.sql.ExecContext(ctx, query, args...)
 	if err != nil {
 		return 0, fmt.Errorf("batch set concurrency: %w", err)
 	}
@@ -759,9 +762,15 @@ func (r *userRepository) BatchAddConcurrency(ctx context.Context, userIDs []int6
 	if len(userIDs) == 0 {
 		return 0, nil
 	}
-	res, err := r.sql.ExecContext(ctx,
-		"UPDATE users SET concurrency = GREATEST(concurrency + $1, 0), updated_at = NOW() WHERE id = ANY($2) AND deleted_at IS NULL",
-		delta, pq.Array(userIDs))
+	inClause, idArgs := arrayInClause("id", userIDs, "$2")
+	// SQLite 没有 GREATEST，但有 MAX 标量函数，PostgreSQL 用 GREATEST。
+	maxFn := "GREATEST"
+	if sqldialect.UsesSQLite() {
+		maxFn = "MAX"
+	}
+	query := "UPDATE users SET concurrency = " + maxFn + "(concurrency + $1, 0), updated_at = " + sqldialect.NowExpr() + " WHERE " + inClause + " AND deleted_at IS NULL"
+	args := append([]any{delta}, idArgs...)
+	res, err := r.sql.ExecContext(ctx, query, args...)
 	if err != nil {
 		return 0, fmt.Errorf("batch add concurrency: %w", err)
 	}

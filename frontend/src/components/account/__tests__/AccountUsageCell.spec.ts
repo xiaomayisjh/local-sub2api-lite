@@ -7,6 +7,36 @@ const { getUsage } = vi.hoisted(() => ({
   getUsage: vi.fn()
 }))
 
+type IntersectionCallback = ConstructorParameters<typeof IntersectionObserver>[0]
+
+let intersectionCallbacks: IntersectionCallback[] = []
+
+class DeferredIntersectionObserver {
+  private callback: IntersectionCallback
+
+  constructor(callback: IntersectionCallback) {
+    this.callback = callback
+    intersectionCallbacks.push(callback)
+  }
+
+  takeRecords = vi.fn(() => [] as IntersectionObserverEntry[])
+
+  observe = vi.fn()
+  disconnect = vi.fn()
+  unobserve = vi.fn()
+}
+
+const triggerIntersect = async () => {
+  const callbacks = [...intersectionCallbacks]
+  callbacks.forEach((callback) => {
+    callback(
+      [{ isIntersecting: true } as IntersectionObserverEntry],
+      {} as IntersectionObserver
+    )
+  })
+  await flushPromises()
+}
+
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
@@ -57,6 +87,8 @@ function makeAccount(overrides: Partial<Account>): Account {
 describe('AccountUsageCell', () => {
   beforeEach(() => {
     getUsage.mockReset()
+    intersectionCallbacks = []
+    vi.stubGlobal('IntersectionObserver', DeferredIntersectionObserver)
     Object.defineProperty(window, 'matchMedia', {
       writable: true,
       value: vi.fn().mockImplementation(() => ({
@@ -111,6 +143,8 @@ describe('AccountUsageCell', () => {
     })
 
     await flushPromises()
+    expect(getUsage).not.toHaveBeenCalled()
+    await triggerIntersect()
 
     expect(wrapper.text()).toContain('admin.accounts.usageWindow.gemini3Image|70|2026-03-01T09:00:00Z')
   })
@@ -144,6 +178,8 @@ describe('AccountUsageCell', () => {
     })
 
     await flushPromises()
+    expect(getUsage).not.toHaveBeenCalled()
+    await triggerIntersect()
 
     expect(wrapper.text()).toContain('admin.accounts.aiCreditsBalance')
     expect(wrapper.text()).toContain('25')
@@ -205,6 +241,8 @@ describe('AccountUsageCell', () => {
     })
 
     await flushPromises()
+    expect(getUsage).not.toHaveBeenCalled()
+    await triggerIntersect()
 
     expect(getUsage).toHaveBeenCalledWith(2000)
     expect(wrapper.text()).toContain('5h|15|300')
@@ -266,6 +304,8 @@ describe('AccountUsageCell', () => {
     })
 
     await flushPromises()
+    expect(getUsage).not.toHaveBeenCalled()
+    await triggerIntersect()
 
     expect(getUsage).toHaveBeenCalledWith(2001)
     // 单一数据源：始终使用 /usage API 返回值，忽略 codex 快照
@@ -330,13 +370,13 @@ describe('AccountUsageCell', () => {
     })
 
     await flushPromises()
-    // mount 时已经拉取一次
+    expect(getUsage).not.toHaveBeenCalled()
+    await triggerIntersect()
     expect(getUsage).toHaveBeenCalledTimes(1)
 
     await wrapper.setProps({ manualRefreshToken: 1 })
     await flushPromises()
 
-    // 手动刷新再拉一次
     expect(getUsage).toHaveBeenCalledTimes(2)
     expect(getUsage).toHaveBeenCalledWith(2010)
     // 单一数据源：始终使用 /usage API 值
@@ -392,6 +432,8 @@ describe('AccountUsageCell', () => {
 	})
 
 	await flushPromises()
+	expect(getUsage).not.toHaveBeenCalled()
+	await triggerIntersect()
 
 	expect(getUsage).toHaveBeenCalledWith(2002)
 	expect(wrapper.text()).toContain('5h|0|27700')
@@ -453,6 +495,8 @@ describe('AccountUsageCell', () => {
 	})
 
 	await flushPromises()
+	expect(getUsage).not.toHaveBeenCalled()
+	await triggerIntersect()
 	expect(wrapper.text()).toContain('5h|0|100')
 	expect(getUsage).toHaveBeenCalledTimes(1)
 
@@ -524,6 +568,8 @@ describe('AccountUsageCell', () => {
 	})
 
 	await flushPromises()
+	expect(getUsage).not.toHaveBeenCalled()
+	await triggerIntersect()
 
   expect(getUsage).toHaveBeenCalledWith(2004)
   expect(wrapper.text()).toContain('5h|100|106540000')

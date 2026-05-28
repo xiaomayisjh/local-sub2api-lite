@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/repository/sqldialect"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
@@ -331,6 +332,9 @@ func (r *opsRepository) ListAlertEvents(ctx context.Context, filter *service.Ops
 	}
 	if limit > 500 {
 		limit = 500
+	}
+	if sqldialect.UsesSQLite() {
+		return []*service.OpsAlertEvent{}, nil
 	}
 
 	where, args := buildOpsAlertEventsWhere(filter)

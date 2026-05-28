@@ -178,6 +178,17 @@ type AccountWithConcurrency struct {
 
 const accountListGroupUngroupedQueryValue = "ungrouped"
 
+// truncateErrorMessage trims an error message to a reasonable persisted length
+// so accounts.error_message stays readable in the admin UI.
+func truncateErrorMessage(msg string) string {
+	const maxLen = 480
+	msg = strings.TrimSpace(msg)
+	if len(msg) <= maxLen {
+		return msg
+	}
+	return msg[:maxLen] + "..."
+}
+
 func (h *AccountHandler) buildAccountResponseWithRuntime(ctx context.Context, account *service.Account) AccountWithConcurrency {
 	item := AccountWithConcurrency{
 		Account:            dto.AccountFromService(account),
@@ -732,7 +743,12 @@ func (h *AccountHandler) Test(c *gin.Context) {
 
 	// Use AccountTestService to test the account with SSE streaming
 	if err := h.accountTestService.TestAccountConnection(c, accountID, req.ModelID, req.Prompt, req.Mode); err != nil {
-		// Error already sent via SSE, just log
+		// 测试失败：持久化错误状态，前端 reload 时可以看到。
+		// 使用 Background 上下文，避免 SSE 流关闭导致写库失败。
+		bgCtx := context.Background()
+		if setErr := h.adminService.SetAccountError(bgCtx, accountID, truncateErrorMessage(err.Error())); setErr != nil {
+			log.Printf("[WARN] failed to persist test error for account %d: %v", accountID, setErr)
+		}
 		return
 	}
 
@@ -966,6 +982,10 @@ func (h *AccountHandler) Refresh(c *gin.Context) {
 
 	updatedAccount, warning, err := h.refreshSingleAccount(c.Request.Context(), account)
 	if err != nil {
+		// 持久化错误状态，确保 UI reload 时能看到刷新失败而不是“无变化”。
+		if setErr := h.adminService.SetAccountError(c.Request.Context(), accountID, truncateErrorMessage(err.Error())); setErr != nil {
+			log.Printf("[WARN] failed to persist refresh error for account %d: %v", accountID, setErr)
+		}
 		response.ErrorFrom(c, err)
 		return
 	}
@@ -1042,18 +1062,28 @@ func (h *AccountHandler) ClearError(c *gin.Context) {
 // POST /api/v1/admin/accounts/batch-clear-error
 func (h *AccountHandler) BatchClearError(c *gin.Context) {
 	var req struct {
-		AccountIDs []int64 `json:"account_ids"`
+		AccountIDs []int64                   `json:"account_ids"`
+		Filters    *BulkUpdateAccountFilters `json:"filters"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	if len(req.AccountIDs) == 0 {
-		response.BadRequest(c, "account_ids is required")
+	ctx := c.Request.Context()
+
+	accountIDs := req.AccountIDs
+	if len(accountIDs) == 0 && req.Filters != nil {
+		resolved, err := h.adminService.ResolveAccountIDsByFilters(ctx, toServiceBulkUpdateAccountFilters(req.Filters))
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		accountIDs = resolved
+	}
+	if len(accountIDs) == 0 {
+		response.BadRequest(c, "account_ids or filters is required")
 		return
 	}
-
-	ctx := c.Request.Context()
 
 	const maxConcurrency = 10
 	g, gctx := errgroup.WithContext(ctx)
@@ -1064,7 +1094,7 @@ func (h *AccountHandler) BatchClearError(c *gin.Context) {
 	var errors []gin.H
 
 	// 注意：所有 goroutine 必须 return nil，避免 errgroup cancel 其他并发任务
-	for _, id := range req.AccountIDs {
+	for _, id := range accountIDs {
 		accountID := id // 闭包捕获
 		g.Go(func() error {
 			account, err := h.adminService.ClearAccountError(gctx, accountID)
@@ -1099,7 +1129,7 @@ func (h *AccountHandler) BatchClearError(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{
-		"total":   len(req.AccountIDs),
+		"total":   len(accountIDs),
 		"success": successCount,
 		"failed":  failedCount,
 		"errors":  errors,
@@ -1110,20 +1140,31 @@ func (h *AccountHandler) BatchClearError(c *gin.Context) {
 // POST /api/v1/admin/accounts/batch-refresh
 func (h *AccountHandler) BatchRefresh(c *gin.Context) {
 	var req struct {
-		AccountIDs []int64 `json:"account_ids"`
+		AccountIDs []int64                   `json:"account_ids"`
+		Filters    *BulkUpdateAccountFilters `json:"filters"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	if len(req.AccountIDs) == 0 {
-		response.BadRequest(c, "account_ids is required")
-		return
-	}
 
 	ctx := c.Request.Context()
 
-	accounts, err := h.adminService.GetAccountsByIDs(ctx, req.AccountIDs)
+	accountIDs := req.AccountIDs
+	if len(accountIDs) == 0 && req.Filters != nil {
+		resolved, err := h.adminService.ResolveAccountIDsByFilters(ctx, toServiceBulkUpdateAccountFilters(req.Filters))
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		accountIDs = resolved
+	}
+	if len(accountIDs) == 0 {
+		response.BadRequest(c, "account_ids or filters is required")
+		return
+	}
+
+	accounts, err := h.adminService.GetAccountsByIDs(ctx, accountIDs)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -1147,7 +1188,7 @@ func (h *AccountHandler) BatchRefresh(c *gin.Context) {
 	var warnings []gin.H
 
 	// 将不存在的账号 ID 标记为失败
-	for _, id := range req.AccountIDs {
+	for _, id := range accountIDs {
 		if !foundIDs[id] {
 			failedCount++
 			errors = append(errors, gin.H{
@@ -1172,6 +1213,10 @@ func (h *AccountHandler) BatchRefresh(c *gin.Context) {
 					"account_id": acc.ID,
 					"error":      err.Error(),
 				})
+				// 刷新失败时持久化错误状态，让前端在 reload 时观察到。
+				if setErr := h.adminService.SetAccountError(gctx, acc.ID, truncateErrorMessage(err.Error())); setErr != nil {
+					log.Printf("[WARN] failed to persist refresh error for account %d: %v", acc.ID, setErr)
+				}
 			} else {
 				successCount++
 				if warning != "" {
@@ -1192,7 +1237,7 @@ func (h *AccountHandler) BatchRefresh(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{
-		"total":    len(req.AccountIDs),
+		"total":    len(accountIDs),
 		"success":  successCount,
 		"failed":   failedCount,
 		"errors":   errors,

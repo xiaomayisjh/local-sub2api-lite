@@ -1,0 +1,20 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "local-sub2api-lite",
+  "outputfilename": "local-sub2api-lite",
+  "frontend:install": "cd ../frontend && pnpm install",
+  "frontend:build": "cd ../frontend && pnpm run build",
+  "frontend:dev:watcher": "cd ../frontend && pnpm run dev",
+  "frontend:dev:serverUrl": "http://localhost:3000",
+  "author": {
+    "name": "Sub2API Local"
+  },
+  "info": {
+    "companyName": "local-sub2api-lite",
+    "productName": "local-sub2api-lite",
+    "productVersion": "1.0.0"
+  },
+  "wailsjsdir": "./frontend",
+  "assetdir": "../backend/internal/web/dist",
+  "reloaddirs": "../frontend/src,../backend/internal"
+}

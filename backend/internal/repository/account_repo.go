@@ -27,6 +27,7 @@ import (
 	dbproxy "github.com/Wei-Shaw/sub2api/ent/proxy"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	"github.com/Wei-Shaw/sub2api/internal/repository/sqldialect"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
 
@@ -67,7 +68,7 @@ var schedulerNeutralExtraKeys = map[string]struct{}{
 // NewAccountRepository 创建账户仓储实例。
 // 这是对外暴露的构造函数，返回接口类型以便于依赖注入。
 func NewAccountRepository(client *dbent.Client, sqlDB *sql.DB, schedulerCache service.SchedulerCache) service.AccountRepository {
-	return newAccountRepositoryWithSQL(client, sqlDB, schedulerCache)
+	return newAccountRepositoryWithSQL(client, SQLExecutorFromDB(sqlDB), schedulerCache)
 }
 
 // newAccountRepositoryWithSQL 是内部构造函数，支持依赖注入 SQL 执行器。
@@ -484,36 +485,18 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 					dbaccount.RateLimitResetAtIsNil(),
 					dbaccount.RateLimitResetAtLTE(time.Now()),
 				),
-				dbpredicate.Account(func(s *entsql.Selector) {
-					col := s.C("temp_unschedulable_until")
-					s.Where(entsql.Or(
-						entsql.IsNull(col),
-						entsql.LTE(col, entsql.Expr("NOW()")),
-					))
-				}),
+				tempUnschedulablePredicate(time.Now()),
 			)
 		case "rate_limited":
 			q = q.Where(
 				dbaccount.StatusEQ(service.StatusActive),
 				dbaccount.RateLimitResetAtGT(time.Now()),
-				dbpredicate.Account(func(s *entsql.Selector) {
-					col := s.C("temp_unschedulable_until")
-					s.Where(entsql.Or(
-						entsql.IsNull(col),
-						entsql.LTE(col, entsql.Expr("NOW()")),
-					))
-				}),
+				tempUnschedulablePredicate(time.Now()),
 			)
 		case "temp_unschedulable":
 			q = q.Where(
 				dbaccount.StatusEQ(service.StatusActive),
-				dbpredicate.Account(func(s *entsql.Selector) {
-					col := s.C("temp_unschedulable_until")
-					s.Where(entsql.And(
-						entsql.Not(entsql.IsNull(col)),
-						entsql.GT(col, entsql.Expr("NOW()")),
-					))
-				}),
+				tempUnschedulableActivePredicate(time.Now()),
 			)
 		case "unschedulable":
 			q = q.Where(
@@ -523,13 +506,7 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 					dbaccount.RateLimitResetAtIsNil(),
 					dbaccount.RateLimitResetAtLTE(time.Now()),
 				),
-				dbpredicate.Account(func(s *entsql.Selector) {
-					col := s.C("temp_unschedulable_until")
-					s.Where(entsql.Or(
-						entsql.IsNull(col),
-						entsql.LTE(col, entsql.Expr("NOW()")),
-					))
-				}),
+				tempUnschedulablePredicate(time.Now()),
 			)
 		default:
 			q = q.Where(dbaccount.StatusEQ(status))
@@ -683,6 +660,31 @@ func (r *accountRepository) UpdateLastUsed(ctx context.Context, id int64) error 
 
 func (r *accountRepository) BatchUpdateLastUsed(ctx context.Context, updates map[int64]time.Time) error {
 	if len(updates) == 0 {
+		return nil
+	}
+
+	if sqldialect.UsesSQLite() {
+		for id, ts := range updates {
+			affected, err := r.client.Account.Update().
+				Where(dbaccount.IDEQ(id), dbaccount.DeletedAtIsNil()).
+				SetLastUsedAt(ts).
+				SetUpdatedAt(time.Now()).
+				Save(ctx)
+			if err != nil {
+				return err
+			}
+			if affected == 0 {
+				continue
+			}
+		}
+		lastUsedPayload := make(map[string]int64, len(updates))
+		for id, ts := range updates {
+			lastUsedPayload[strconv.FormatInt(id, 10)] = ts.Unix()
+		}
+		payload := map[string]any{"last_used": lastUsedPayload}
+		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountLastUsed, nil, nil, payload); err != nil {
+			logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue batch last used failed: err=%v", err)
+		}
 		return nil
 	}
 
@@ -929,7 +931,7 @@ func (r *accountRepository) ListSchedulable(ctx context.Context) ([]service.Acco
 		Where(
 			dbaccount.StatusEQ(service.StatusActive),
 			dbaccount.SchedulableEQ(true),
-			tempUnschedulablePredicate(),
+			tempUnschedulablePredicate(now),
 			notExpiredPredicate(now),
 			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
 			dbaccount.Or(dbaccount.RateLimitResetAtIsNil(), dbaccount.RateLimitResetAtLTE(now)),
@@ -956,7 +958,7 @@ func (r *accountRepository) ListSchedulableByPlatform(ctx context.Context, platf
 			dbaccount.PlatformEQ(platform),
 			dbaccount.StatusEQ(service.StatusActive),
 			dbaccount.SchedulableEQ(true),
-			tempUnschedulablePredicate(),
+			tempUnschedulablePredicate(now),
 			notExpiredPredicate(now),
 			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
 			dbaccount.Or(dbaccount.RateLimitResetAtIsNil(), dbaccount.RateLimitResetAtLTE(now)),
@@ -990,7 +992,7 @@ func (r *accountRepository) ListSchedulableByPlatforms(ctx context.Context, plat
 			dbaccount.PlatformIn(platforms...),
 			dbaccount.StatusEQ(service.StatusActive),
 			dbaccount.SchedulableEQ(true),
-			tempUnschedulablePredicate(),
+			tempUnschedulablePredicate(now),
 			notExpiredPredicate(now),
 			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
 			dbaccount.Or(dbaccount.RateLimitResetAtIsNil(), dbaccount.RateLimitResetAtLTE(now)),
@@ -1011,7 +1013,7 @@ func (r *accountRepository) ListSchedulableUngroupedByPlatform(ctx context.Conte
 			dbaccount.StatusEQ(service.StatusActive),
 			dbaccount.SchedulableEQ(true),
 			dbaccount.Not(dbaccount.HasAccountGroups()),
-			tempUnschedulablePredicate(),
+			tempUnschedulablePredicate(now),
 			notExpiredPredicate(now),
 			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
 			dbaccount.Or(dbaccount.RateLimitResetAtIsNil(), dbaccount.RateLimitResetAtLTE(now)),
@@ -1035,7 +1037,7 @@ func (r *accountRepository) ListSchedulableUngroupedByPlatforms(ctx context.Cont
 			dbaccount.StatusEQ(service.StatusActive),
 			dbaccount.SchedulableEQ(true),
 			dbaccount.Not(dbaccount.HasAccountGroups()),
-			tempUnschedulablePredicate(),
+			tempUnschedulablePredicate(now),
 			notExpiredPredicate(now),
 			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
 			dbaccount.Or(dbaccount.RateLimitResetAtIsNil(), dbaccount.RateLimitResetAtLTE(now)),
@@ -1081,6 +1083,10 @@ func (r *accountRepository) SetModelRateLimit(ctx context.Context, id int64, sco
 	if scope == "" {
 		return nil
 	}
+	if sqldialect.UsesSQLite() {
+		return r.setModelRateLimitSQLite(ctx, id, scope, resetAt)
+	}
+
 	now := time.Now().UTC()
 	payload := map[string]string{
 		"rate_limited_at":     now.Format(time.RFC3339),
@@ -1139,15 +1145,18 @@ func (r *accountRepository) SetOverloaded(ctx context.Context, id int64, until t
 }
 
 func (r *accountRepository) SetTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error {
-	_, err := r.sql.ExecContext(ctx, `
-		UPDATE accounts
-		SET temp_unschedulable_until = $1,
-			temp_unschedulable_reason = $2,
-			updated_at = NOW()
-		WHERE id = $3
-			AND deleted_at IS NULL
-			AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until < $1)
-	`, until, reason, id)
+	_, err := r.client.Account.Update().
+		Where(
+			dbaccount.IDEQ(id),
+			dbaccount.DeletedAtIsNil(),
+			dbaccount.Or(
+				dbaccount.TempUnschedulableUntilIsNil(),
+				dbaccount.TempUnschedulableUntilLT(until),
+			),
+		).
+		SetTempUnschedulableUntil(until).
+		SetTempUnschedulableReason(reason).
+		Save(ctx)
 	if err != nil {
 		return err
 	}
@@ -1194,6 +1203,10 @@ func (r *accountRepository) ClearRateLimit(ctx context.Context, id int64) error 
 }
 
 func (r *accountRepository) ClearAntigravityQuotaScopes(ctx context.Context, id int64) error {
+	if sqldialect.UsesSQLite() {
+		return r.updateExtraSQLite(ctx, id, nil, []string{"antigravity_quota_scopes"}, true)
+	}
+
 	client := clientFromContext(ctx, r.client)
 	result, err := client.ExecContext(
 		ctx,
@@ -1218,6 +1231,10 @@ func (r *accountRepository) ClearAntigravityQuotaScopes(ctx context.Context, id 
 }
 
 func (r *accountRepository) ClearModelRateLimits(ctx context.Context, id int64) error {
+	if sqldialect.UsesSQLite() {
+		return r.updateExtraSQLite(ctx, id, nil, []string{"model_rate_limits"}, true)
+	}
+
 	client := clientFromContext(ctx, r.client)
 	result, err := client.ExecContext(
 		ctx,
@@ -1313,6 +1330,10 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 	}
 
 	// 使用 JSONB 合并操作实现原子更新，避免读-改-写的并发丢失更新问题
+	if sqldialect.UsesSQLite() {
+		return r.updateExtraSQLite(ctx, id, updates, nil, shouldEnqueueSchedulerOutboxForExtraUpdates(updates))
+	}
+
 	payload, err := json.Marshal(updates)
 	if err != nil {
 		return err
@@ -1381,6 +1402,9 @@ func isSchedulerNeutralExtraKey(key string) bool {
 func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates service.AccountBulkUpdate) (int64, error) {
 	if len(ids) == 0 {
 		return 0, nil
+	}
+	if sqldialect.UsesSQLite() {
+		return r.bulkUpdateSQLite(ctx, ids, updates)
 	}
 
 	setClauses := make([]string, 0, 8)
@@ -1474,22 +1498,115 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 		return 0, err
 	}
 	if rows > 0 {
-		payload := map[string]any{"account_ids": ids}
-		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountBulkChanged, nil, nil, payload); err != nil {
-			logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue bulk update failed: err=%v", err)
-		}
-		shouldSync := false
-		if updates.Status != nil && (*updates.Status == service.StatusError || *updates.Status == service.StatusDisabled) {
-			shouldSync = true
-		}
-		if updates.Schedulable != nil && !*updates.Schedulable {
-			shouldSync = true
-		}
-		if shouldSync {
-			r.syncSchedulerAccountSnapshots(ctx, ids)
-		}
+		r.afterBulkAccountUpdate(ctx, ids, updates)
 	}
 	return rows, nil
+}
+
+func (r *accountRepository) bulkUpdateSQLite(ctx context.Context, ids []int64, updates service.AccountBulkUpdate) (int64, error) {
+	if !hasAccountBulkUpdates(updates) {
+		return 0, nil
+	}
+
+	client := clientFromContext(ctx, r.client)
+	now := time.Now()
+	var rows int64
+	for _, id := range ids {
+		update := client.Account.Update().
+			Where(dbaccount.IDEQ(id), dbaccount.DeletedAtIsNil()).
+			SetUpdatedAt(now)
+
+		if updates.Name != nil {
+			update.SetName(*updates.Name)
+		}
+		if updates.ProxyID != nil {
+			if *updates.ProxyID == 0 {
+				update.ClearProxyID()
+			} else {
+				update.SetProxyID(*updates.ProxyID)
+			}
+		}
+		if updates.Concurrency != nil {
+			update.SetConcurrency(*updates.Concurrency)
+		}
+		if updates.Priority != nil {
+			update.SetPriority(*updates.Priority)
+		}
+		if updates.RateMultiplier != nil {
+			update.SetRateMultiplier(*updates.RateMultiplier)
+		}
+		if updates.LoadFactor != nil {
+			if *updates.LoadFactor <= 0 {
+				update.ClearLoadFactor()
+			} else {
+				update.SetLoadFactor(*updates.LoadFactor)
+			}
+		}
+		if updates.Status != nil {
+			update.SetStatus(*updates.Status)
+		}
+		if updates.Schedulable != nil {
+			update.SetSchedulable(*updates.Schedulable)
+		}
+		if len(updates.Credentials) > 0 || len(updates.Extra) > 0 {
+			existing, err := client.Account.Query().
+				Where(dbaccount.IDEQ(id), dbaccount.DeletedAtIsNil()).
+				Only(ctx)
+			if err != nil {
+				if dbent.IsNotFound(err) {
+					continue
+				}
+				return rows, err
+			}
+			if len(updates.Credentials) > 0 {
+				update.SetCredentials(mergeJSONMaps(existing.Credentials, updates.Credentials))
+			}
+			if len(updates.Extra) > 0 {
+				update.SetExtra(mergeJSONMaps(existing.Extra, updates.Extra))
+			}
+		}
+
+		affected, err := update.Save(ctx)
+		if err != nil {
+			return rows, err
+		}
+		rows += int64(affected)
+	}
+
+	if rows > 0 {
+		r.afterBulkAccountUpdate(ctx, ids, updates)
+	}
+	return rows, nil
+}
+
+func hasAccountBulkUpdates(updates service.AccountBulkUpdate) bool {
+	return updates.Name != nil ||
+		updates.ProxyID != nil ||
+		updates.Concurrency != nil ||
+		updates.Priority != nil ||
+		updates.RateMultiplier != nil ||
+		updates.LoadFactor != nil ||
+		updates.Status != nil ||
+		updates.Schedulable != nil ||
+		len(updates.Credentials) > 0 ||
+		len(updates.Extra) > 0
+}
+
+func (r *accountRepository) afterBulkAccountUpdate(ctx context.Context, ids []int64, updates service.AccountBulkUpdate) {
+	payload := map[string]any{"account_ids": ids}
+	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountBulkChanged, nil, nil, payload); err != nil {
+		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue bulk update failed: err=%v", err)
+	}
+	shouldSync := false
+	if updates.Status != nil && (*updates.Status == service.StatusError || *updates.Status == service.StatusDisabled) {
+		shouldSync = true
+	}
+	if updates.Schedulable != nil && !*updates.Schedulable {
+		shouldSync = true
+	}
+	if shouldSync {
+		r.syncSchedulerAccountSnapshots(ctx, ids)
+	}
 }
 
 type accountGroupQueryOptions struct {
@@ -1515,7 +1632,7 @@ func (r *accountRepository) queryAccountsByGroup(ctx context.Context, groupID in
 		now := time.Now()
 		preds = append(preds,
 			dbaccount.SchedulableEQ(true),
-			tempUnschedulablePredicate(),
+			tempUnschedulablePredicate(now),
 			notExpiredPredicate(now),
 			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
 			dbaccount.Or(dbaccount.RateLimitResetAtIsNil(), dbaccount.RateLimitResetAtLTE(now)),
@@ -1609,14 +1726,18 @@ func (r *accountRepository) accountsToService(ctx context.Context, accounts []*d
 	return outAccounts, nil
 }
 
-func tempUnschedulablePredicate() dbpredicate.Account {
-	return dbpredicate.Account(func(s *entsql.Selector) {
-		col := s.C("temp_unschedulable_until")
-		s.Where(entsql.Or(
-			entsql.IsNull(col),
-			entsql.LTE(col, entsql.Expr("NOW()")),
-		))
-	})
+func tempUnschedulablePredicate(now time.Time) dbpredicate.Account {
+	return dbaccount.Or(
+		dbaccount.TempUnschedulableUntilIsNil(),
+		dbaccount.TempUnschedulableUntilLTE(now),
+	)
+}
+
+func tempUnschedulableActivePredicate(now time.Time) dbpredicate.Account {
+	return dbaccount.And(
+		dbaccount.TempUnschedulableUntilNotNil(),
+		dbaccount.TempUnschedulableUntilGT(now),
+	)
 }
 
 func notExpiredPredicate(now time.Time) dbpredicate.Account {
@@ -1786,6 +1907,202 @@ func copyJSONMap(in map[string]any) map[string]any {
 	return out
 }
 
+func mergeJSONMaps(base map[string]any, updates map[string]any) map[string]any {
+	merged := normalizeJSONMap(copyJSONMap(base))
+	for k, v := range updates {
+		merged[k] = v
+	}
+	return merged
+}
+
+func deleteJSONMapKeys(base map[string]any, keys []string) map[string]any {
+	updated := normalizeJSONMap(copyJSONMap(base))
+	for _, key := range keys {
+		delete(updated, key)
+	}
+	return updated
+}
+
+func (r *accountRepository) updateExtraSQLite(ctx context.Context, id int64, updates map[string]any, deleteKeys []string, enqueue bool) error {
+	client := clientFromContext(ctx, r.client)
+	existing, err := client.Account.Query().
+		Where(dbaccount.IDEQ(id), dbaccount.DeletedAtIsNil()).
+		Only(ctx)
+	if err != nil {
+		return translatePersistenceError(err, service.ErrAccountNotFound, nil)
+	}
+
+	extra := existing.Extra
+	if len(updates) > 0 {
+		extra = mergeJSONMaps(extra, updates)
+	}
+	if len(deleteKeys) > 0 {
+		extra = deleteJSONMapKeys(extra, deleteKeys)
+	}
+
+	affected, err := client.Account.Update().
+		Where(dbaccount.IDEQ(id), dbaccount.DeletedAtIsNil()).
+		SetExtra(extra).
+		SetUpdatedAt(time.Now()).
+		Save(ctx)
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return service.ErrAccountNotFound
+	}
+	if enqueue {
+		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
+			logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue extra update failed: account=%d err=%v", id, err)
+		}
+	} else {
+		r.syncSchedulerAccountSnapshot(ctx, id)
+	}
+	return nil
+}
+
+func (r *accountRepository) setModelRateLimitSQLite(ctx context.Context, id int64, scope string, resetAt time.Time) error {
+	now := time.Now().UTC()
+	payload := map[string]any{
+		"rate_limited_at":     now.Format(time.RFC3339),
+		"rate_limit_reset_at": resetAt.UTC().Format(time.RFC3339),
+	}
+
+	client := clientFromContext(ctx, r.client)
+	existing, err := client.Account.Query().
+		Where(dbaccount.IDEQ(id), dbaccount.DeletedAtIsNil()).
+		Only(ctx)
+	if err != nil {
+		return translatePersistenceError(err, service.ErrAccountNotFound, nil)
+	}
+
+	extra := normalizeJSONMap(copyJSONMap(existing.Extra))
+	rawLimits, _ := extra["model_rate_limits"].(map[string]any)
+	if rawLimits == nil {
+		rawLimits = map[string]any{}
+	}
+	rawLimits[scope] = payload
+	extra["model_rate_limits"] = rawLimits
+
+	affected, err := client.Account.Update().
+		Where(dbaccount.IDEQ(id), dbaccount.DeletedAtIsNil()).
+		SetExtra(extra).
+		SetUpdatedAt(time.Now()).
+		Save(ctx)
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return service.ErrAccountNotFound
+	}
+	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
+		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue model rate limit failed: account=%d err=%v", id, err)
+	}
+	return nil
+}
+
+func (r *accountRepository) incrementQuotaUsedSQLite(ctx context.Context, id int64, amount float64) error {
+	client := clientFromContext(ctx, r.client)
+	existing, err := client.Account.Query().
+		Where(dbaccount.IDEQ(id), dbaccount.DeletedAtIsNil()).
+		Only(ctx)
+	if err != nil {
+		return translatePersistenceError(err, service.ErrAccountNotFound, nil)
+	}
+
+	extra := normalizeJSONMap(copyJSONMap(existing.Extra))
+	beforeUsed := jsonNumberAsFloat64(extra["quota_used"])
+	limit := jsonNumberAsFloat64(extra["quota_limit"])
+	newUsed := beforeUsed + amount
+	extra["quota_used"] = newUsed
+	extra["quota_daily_used"] = jsonNumberAsFloat64(extra["quota_daily_used"]) + amount
+	extra["quota_weekly_used"] = jsonNumberAsFloat64(extra["quota_weekly_used"]) + amount
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, ok := extra["quota_daily_start"]; !ok {
+		extra["quota_daily_start"] = now
+	}
+	if _, ok := extra["quota_weekly_start"]; !ok {
+		extra["quota_weekly_start"] = now
+	}
+
+	affected, err := client.Account.Update().
+		Where(dbaccount.IDEQ(id), dbaccount.DeletedAtIsNil()).
+		SetExtra(extra).
+		SetUpdatedAt(time.Now()).
+		Save(ctx)
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return service.ErrAccountNotFound
+	}
+	if limit > 0 && newUsed >= limit && beforeUsed < limit {
+		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
+			logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue quota exceeded failed: account=%d err=%v", id, err)
+		}
+	}
+	return nil
+}
+
+func (r *accountRepository) resetQuotaUsedSQLite(ctx context.Context, id int64) error {
+	client := clientFromContext(ctx, r.client)
+	existing, err := client.Account.Query().
+		Where(dbaccount.IDEQ(id), dbaccount.DeletedAtIsNil()).
+		Only(ctx)
+	if err != nil {
+		return translatePersistenceError(err, service.ErrAccountNotFound, nil)
+	}
+
+	extra := normalizeJSONMap(copyJSONMap(existing.Extra))
+	extra["quota_used"] = 0
+	extra["quota_daily_used"] = 0
+	extra["quota_weekly_used"] = 0
+	delete(extra, "quota_daily_start")
+	delete(extra, "quota_weekly_start")
+	delete(extra, "quota_daily_reset_at")
+	delete(extra, "quota_weekly_reset_at")
+
+	affected, err := client.Account.Update().
+		Where(dbaccount.IDEQ(id), dbaccount.DeletedAtIsNil()).
+		SetExtra(extra).
+		SetUpdatedAt(time.Now()).
+		Save(ctx)
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return service.ErrAccountNotFound
+	}
+	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
+		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue quota reset failed: account=%d err=%v", id, err)
+	}
+	return nil
+}
+
+func jsonNumberAsFloat64(v any) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case float32:
+		return float64(n)
+	case int:
+		return float64(n)
+	case int64:
+		return float64(n)
+	case int32:
+		return float64(n)
+	case json.Number:
+		f, _ := n.Float64()
+		return f
+	case string:
+		f, _ := strconv.ParseFloat(n, 64)
+		return f
+	default:
+		return 0
+	}
+}
+
 func joinClauses(clauses []string, sep string) string {
 	if len(clauses) == 0 {
 		return ""
@@ -1949,6 +2266,10 @@ const nextWeeklyResetAtExpr = `(
 // 日/周额度在周期过期时自动重置为 0 再递增。
 // 支持滚动窗口（rolling）和固定时间（fixed）两种重置模式。
 func (r *accountRepository) IncrementQuotaUsed(ctx context.Context, id int64, amount float64) error {
+	if sqldialect.UsesSQLite() {
+		return r.incrementQuotaUsedSQLite(ctx, id, amount)
+	}
+
 	rows, err := r.sql.QueryContext(ctx,
 		`UPDATE accounts SET extra = (
 			COALESCE(extra, '{}'::jsonb)
@@ -2021,6 +2342,10 @@ func (r *accountRepository) IncrementQuotaUsed(ctx context.Context, id int64, am
 // ResetQuotaUsed 重置账号所有维度的配额用量为 0
 // 保留固定重置模式的配置字段（quota_daily_reset_mode 等），仅清零用量和窗口起始时间
 func (r *accountRepository) ResetQuotaUsed(ctx context.Context, id int64) error {
+	if sqldialect.UsesSQLite() {
+		return r.resetQuotaUsedSQLite(ctx, id)
+	}
+
 	_, err := r.sql.ExecContext(ctx,
 		`UPDATE accounts SET extra = (
 			COALESCE(extra, '{}'::jsonb)

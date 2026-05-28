@@ -86,8 +86,9 @@ func ErrorFrom(c *gin.Context, err error) bool {
 
 	statusCode, status := infraerrors.ToHTTP(err)
 
-	// Log internal errors with full details for debugging
-	if statusCode >= 500 && c.Request != nil {
+	// Log only unexpected internal errors with full details. Application-level
+	// upstream failures (for example 502 from OAuth providers) already carry a reason.
+	if statusCode >= 500 && status.Reason == infraerrors.UnknownReason && c.Request != nil {
 		log.Printf("[ERROR] %s %s\n  Error: %s", c.Request.Method, c.Request.URL.Path, logredact.RedactText(err.Error()))
 	}
 

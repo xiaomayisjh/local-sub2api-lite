@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/repository/sqldialect"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
 )
@@ -81,7 +82,7 @@ func (r *channelRepository) DeleteModelPricing(ctx context.Context, id int64) er
 }
 
 func (r *channelRepository) ReplaceModelPricing(ctx context.Context, channelID int64, pricingList []service.ChannelModelPricing) error {
-	return r.runInTx(ctx, func(tx *sql.Tx) error {
+	return r.runInTx(ctx, func(tx *RebindTx) error {
 		return replaceModelPricingTx(ctx, tx, channelID, pricingList)
 	})
 }
@@ -90,6 +91,24 @@ func (r *channelRepository) ReplaceModelPricing(ctx context.Context, channelID i
 
 // batchLoadModelPricing 批量加载多个渠道的模型定价（含区间）
 func (r *channelRepository) batchLoadModelPricing(ctx context.Context, channelIDs []int64) (map[int64][]service.ChannelModelPricing, error) {
+	if len(channelIDs) == 0 {
+		return map[int64][]service.ChannelModelPricing{}, nil
+	}
+	if sqldialect.UsesSQLite() {
+		rows, err := r.db.QueryContext(ctx,
+			fmt.Sprintf(
+				`SELECT id, channel_id, platform, models, billing_mode, input_price, output_price, cache_write_price, cache_read_price, image_output_price, per_request_price, created_at, updated_at
+				 FROM channel_model_pricing WHERE channel_id IN (%s) ORDER BY channel_id, id`,
+				numberedPlaceholders(1, len(channelIDs)),
+			),
+			int64SliceArgs(channelIDs)...,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("batch load model pricing: %w", err)
+		}
+		defer func() { _ = rows.Close() }()
+		return r.groupModelPricingRows(ctx, rows, channelIDs)
+	}
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, channel_id, platform, models, billing_mode, input_price, output_price, cache_write_price, cache_read_price, image_output_price, per_request_price, created_at, updated_at
 		 FROM channel_model_pricing WHERE channel_id = ANY($1) ORDER BY channel_id, id`,
@@ -99,7 +118,10 @@ func (r *channelRepository) batchLoadModelPricing(ctx context.Context, channelID
 		return nil, fmt.Errorf("batch load model pricing: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
+	return r.groupModelPricingRows(ctx, rows, channelIDs)
+}
 
+func (r *channelRepository) groupModelPricingRows(ctx context.Context, rows *sql.Rows, channelIDs []int64) (map[int64][]service.ChannelModelPricing, error) {
 	allPricing, allPricingIDs, err := scanModelPricingRows(rows)
 	if err != nil {
 		return nil, err
@@ -129,6 +151,27 @@ func (r *channelRepository) batchLoadModelPricing(ctx context.Context, channelID
 
 // batchLoadIntervals 批量加载多个定价条目的区间
 func (r *channelRepository) batchLoadIntervals(ctx context.Context, pricingIDs []int64) (map[int64][]service.PricingInterval, error) {
+	if len(pricingIDs) == 0 {
+		return map[int64][]service.PricingInterval{}, nil
+	}
+	if sqldialect.UsesSQLite() {
+		rows, err := r.db.QueryContext(ctx,
+			fmt.Sprintf(
+				`SELECT id, pricing_id, min_tokens, max_tokens, tier_label,
+				        input_price, output_price, cache_write_price, cache_read_price,
+				        per_request_price, sort_order, created_at, updated_at
+				 FROM channel_pricing_intervals
+				 WHERE pricing_id IN (%s) ORDER BY pricing_id, sort_order, id`,
+				numberedPlaceholders(1, len(pricingIDs)),
+			),
+			int64SliceArgs(pricingIDs)...,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("batch load intervals: %w", err)
+		}
+		defer func() { _ = rows.Close() }()
+		return scanPricingIntervals(rows, len(pricingIDs), "interval")
+	}
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, pricing_id, min_tokens, max_tokens, tier_label,
 		        input_price, output_price, cache_write_price, cache_read_price,
@@ -141,8 +184,11 @@ func (r *channelRepository) batchLoadIntervals(ctx context.Context, pricingIDs [
 		return nil, fmt.Errorf("batch load intervals: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
+	return scanPricingIntervals(rows, len(pricingIDs), "interval")
+}
 
-	intervalMap := make(map[int64][]service.PricingInterval, len(pricingIDs))
+func scanPricingIntervals(rows *sql.Rows, capacity int, label string) (map[int64][]service.PricingInterval, error) {
+	intervalMap := make(map[int64][]service.PricingInterval, capacity)
 	for rows.Next() {
 		var iv service.PricingInterval
 		if err := rows.Scan(
@@ -150,12 +196,12 @@ func (r *channelRepository) batchLoadIntervals(ctx context.Context, pricingIDs [
 			&iv.InputPrice, &iv.OutputPrice, &iv.CacheWritePrice, &iv.CacheReadPrice,
 			&iv.PerRequestPrice, &iv.SortOrder, &iv.CreatedAt, &iv.UpdatedAt,
 		); err != nil {
-			return nil, fmt.Errorf("scan interval: %w", err)
+			return nil, fmt.Errorf("scan %s: %w", label, err)
 		}
 		intervalMap[iv.PricingID] = append(intervalMap[iv.PricingID], iv)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate intervals: %w", err)
+		return nil, fmt.Errorf("iterate %s: %w", label, err)
 	}
 	return intervalMap, nil
 }
@@ -202,6 +248,17 @@ func setGroupIDsTx(ctx context.Context, exec dbExec, channelID int64, groupIDs [
 		return fmt.Errorf("delete old group associations: %w", err)
 	}
 	if len(groupIDs) == 0 {
+		return nil
+	}
+	if sqldialect.UsesSQLite() {
+		for _, groupID := range groupIDs {
+			if _, err := exec.ExecContext(ctx,
+				`INSERT INTO channel_groups (channel_id, group_id) VALUES ($1, $2)`,
+				channelID, groupID,
+			); err != nil {
+				return fmt.Errorf("insert group association: %w", err)
+			}
+		}
 		return nil
 	}
 	_, err := exec.ExecContext(ctx,

@@ -12,6 +12,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	"github.com/Wei-Shaw/sub2api/internal/repository/sqldialect"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
 
@@ -29,7 +30,7 @@ type groupRepository struct {
 }
 
 func NewGroupRepository(client *dbent.Client, sqlDB *sql.DB) service.GroupRepository {
-	return newGroupRepositoryWithSQL(client, sqlDB)
+	return newGroupRepositoryWithSQL(client, SQLExecutorFromDB(sqlDB))
 }
 
 func newGroupRepositoryWithSQL(client *dbent.Client, sqlq sqlExecutor) *groupRepository {
@@ -515,11 +516,12 @@ func (r *groupRepository) ExistsByIDs(ctx context.Context, ids []int64) (map[int
 		return result, nil
 	}
 
+	inClause, args := arrayInClause("id", uniqueIDs, "$1")
 	rows, err := r.sql.QueryContext(ctx, `
 		SELECT id
 		FROM groups
-		WHERE id = ANY($1) AND deleted_at IS NULL
-	`, pq.Array(uniqueIDs))
+		WHERE `+inClause+` AND deleted_at IS NULL
+	`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -698,6 +700,7 @@ func (r *groupRepository) loadAccountCounts(ctx context.Context, groupIDs []int6
 		return counts, nil
 	}
 
+	inClause, args := arrayInClause("ag.group_id", groupIDs, "$1")
 	rows, err := r.sql.QueryContext(
 		ctx,
 		fmt.Sprintf(`SELECT ag.group_id,
@@ -706,9 +709,9 @@ func (r *groupRepository) loadAccountCounts(ctx context.Context, groupIDs []int6
 			COUNT(*) FILTER (WHERE %s) AS rate_limited
 		FROM account_groups ag
 		JOIN accounts a ON a.id = ag.account_id
-		WHERE ag.group_id = ANY($1)
+		WHERE `+inClause+`
 		GROUP BY ag.group_id`, groupAccountAvailableSQL, groupAccountTemporarilyLimitedSQL),
-		pq.Array(groupIDs),
+		args...,
 	)
 	if err != nil {
 		return nil, err
@@ -741,10 +744,11 @@ func (r *groupRepository) GetAccountIDsByGroupIDs(ctx context.Context, groupIDs 
 		return nil, nil
 	}
 
+	inClause, args := arrayInClause("group_id", groupIDs, "$1")
 	rows, err := r.sql.QueryContext(
 		ctx,
-		"SELECT DISTINCT account_id FROM account_groups WHERE group_id = ANY($1) ORDER BY account_id",
-		pq.Array(groupIDs),
+		"SELECT DISTINCT account_id FROM account_groups WHERE "+inClause+" ORDER BY account_id",
+		args...,
 	)
 	if err != nil {
 		return nil, err
@@ -772,17 +776,28 @@ func (r *groupRepository) BindAccountsToGroup(ctx context.Context, groupID int64
 		return nil
 	}
 
-	// 使用 INSERT ... ON CONFLICT DO NOTHING 忽略已存在的绑定
-	_, err := r.sql.ExecContext(
-		ctx,
-		`INSERT INTO account_groups (account_id, group_id, priority, created_at)
-		 SELECT unnest($1::bigint[]), $2, 50, NOW()
-		 ON CONFLICT (account_id, group_id) DO NOTHING`,
-		pq.Array(accountIDs),
-		groupID,
-	)
-	if err != nil {
-		return err
+	if sqldialect.UsesSQLite() {
+		// SQLite 不支持 unnest($1::bigint[])，改为单条 INSERT OR IGNORE。
+		const stmt = `INSERT OR IGNORE INTO account_groups (account_id, group_id, priority, created_at)
+			VALUES (?, ?, 50, datetime('now'))`
+		for _, accountID := range accountIDs {
+			if _, err := r.sql.ExecContext(ctx, stmt, accountID, groupID); err != nil {
+				return err
+			}
+		}
+	} else {
+		// 使用 INSERT ... ON CONFLICT DO NOTHING 忽略已存在的绑定
+		_, err := r.sql.ExecContext(
+			ctx,
+			`INSERT INTO account_groups (account_id, group_id, priority, created_at)
+			 SELECT unnest($1::bigint[]), $2, 50, NOW()
+			 ON CONFLICT (account_id, group_id) DO NOTHING`,
+			pq.Array(accountIDs),
+			groupID,
+		)
+		if err != nil {
+			return err
+		}
 	}
 
 	// 发送调度器事件
@@ -817,11 +832,12 @@ func (r *groupRepository) UpdateSortOrders(ctx context.Context, updates []servic
 
 	// 与旧实现保持一致：任何不存在/已删除的分组都返回 not found，且不执行更新。
 	var existingCount int
+	existsInClause, existsArgs := arrayInClause("id", groupIDs, "$1")
 	if err := scanSingleRow(
 		ctx,
 		r.sql,
-		`SELECT COUNT(*) FROM groups WHERE deleted_at IS NULL AND id = ANY($1)`,
-		[]any{pq.Array(groupIDs)},
+		`SELECT COUNT(*) FROM groups WHERE deleted_at IS NULL AND `+existsInClause,
+		existsArgs,
 		&existingCount,
 	); err != nil {
 		return err
@@ -838,7 +854,21 @@ func (r *groupRepository) UpdateSortOrders(ctx context.Context, updates []servic
 		args = append(args, id, sortOrderByID[id])
 		placeholder += 2
 	}
-	args = append(args, pq.Array(groupIDs))
+
+	var whereClause string
+	if sqldialect.UsesSQLite() {
+		// SQLite: id IN ($N,$N+1,...)，逐个绑定。
+		idPlaceholders := make([]string, 0, len(groupIDs))
+		for _, id := range groupIDs {
+			idPlaceholders = append(idPlaceholders, fmt.Sprintf("$%d", placeholder))
+			args = append(args, id)
+			placeholder++
+		}
+		whereClause = "id IN (" + strings.Join(idPlaceholders, ",") + ")"
+	} else {
+		whereClause = fmt.Sprintf("id = ANY($%d)", placeholder)
+		args = append(args, pq.Array(groupIDs))
+	}
 
 	query := fmt.Sprintf(`
 		UPDATE groups
@@ -846,8 +876,8 @@ func (r *groupRepository) UpdateSortOrders(ctx context.Context, updates []servic
 			%s
 			ELSE sort_order
 		END
-		WHERE deleted_at IS NULL AND id = ANY($%d)
-	`, strings.Join(caseClauses, "\n\t\t\t"), placeholder)
+		WHERE deleted_at IS NULL AND %s
+	`, strings.Join(caseClauses, "\n\t\t\t"), whereClause)
 
 	result, err := r.sql.ExecContext(ctx, query, args...)
 	if err != nil {

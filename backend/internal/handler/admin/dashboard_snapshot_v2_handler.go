@@ -113,6 +113,14 @@ func (h *DashboardHandler) GetSnapshotV2(c *gin.Context) {
 	})
 	cacheKey := string(keyRaw)
 
+	// 支持前端通过 ?force=1 跳过缓存强制刷新（用户主动点击刷新时）。
+	if parseBoolQueryWithDefault(c.Query("force"), false) {
+		invalidateUserFacingMetricCaches()
+		if h.dashboardService != nil {
+			h.dashboardService.InvalidateCache(c.Request.Context())
+		}
+	}
+
 	cached, hit, err := dashboardSnapshotV2Cache.GetOrLoad(cacheKey, func() (any, error) {
 		return h.buildSnapshotV2Response(
 			c.Request.Context(),

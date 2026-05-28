@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/repository/sqldialect"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
@@ -31,6 +32,9 @@ func (r *opsRepository) GetThroughputTrend(ctx context.Context, filter *service.
 
 	start := filter.StartTime.UTC()
 	end := filter.EndTime.UTC()
+	if sqldialect.UsesSQLite() {
+		return emptyOpsThroughputTrend(filter, bucketSeconds), nil
+	}
 
 	usageJoin, usageWhere, usageArgs, next := buildUsageWhere(filter, start, end, 1)
 	errorWhere, errorArgs, _ := buildErrorWhere(filter, start, end, next)
@@ -445,6 +449,9 @@ func (r *opsRepository) GetErrorTrend(ctx context.Context, filter *service.OpsDa
 
 	start := filter.StartTime.UTC()
 	end := filter.EndTime.UTC()
+	if sqldialect.UsesSQLite() {
+		return emptyOpsErrorTrend(filter, bucketSeconds), nil
+	}
 	where, args, _ := buildErrorWhere(filter, start, end, 1)
 	bucketExpr := opsBucketExprForError(bucketSeconds)
 
@@ -558,6 +565,9 @@ func (r *opsRepository) GetErrorDistribution(ctx context.Context, filter *servic
 
 	start := filter.StartTime.UTC()
 	end := filter.EndTime.UTC()
+	if sqldialect.UsesSQLite() {
+		return emptyOpsErrorDistribution(), nil
+	}
 	where, args, _ := buildErrorWhere(filter, start, end, 1)
 
 	q := `

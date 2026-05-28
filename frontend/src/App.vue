@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { RouterView, useRouter, useRoute } from 'vue-router'
-import { onMounted, onBeforeUnmount, watch } from 'vue'
+import { computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import Toast from '@/components/common/Toast.vue'
 import NavigationProgress from '@/components/common/NavigationProgress.vue'
 import { resolveDocumentTitle } from '@/router/title'
@@ -14,6 +14,11 @@ const appStore = useAppStore()
 const authStore = useAuthStore()
 const subscriptionStore = useSubscriptionStore()
 const announcementStore = useAnnouncementStore()
+const userSelfServiceFeaturesEnabled = computed(() =>
+  authStore.isAuthenticated && !authStore.isSimpleMode && !appStore.backendModeEnabled
+)
+let visibilityListenerRegistered = false
+let delayedAnnouncementFetch: ReturnType<typeof setTimeout> | null = null
 
 /**
  * Update favicon dynamically
@@ -44,51 +49,73 @@ watch(
 
 // Watch for authentication state and manage subscription data + announcements
 function onVisibilityChange() {
-  if (document.visibilityState === 'visible' && authStore.isAuthenticated) {
+  if (document.visibilityState === 'visible' && userSelfServiceFeaturesEnabled.value) {
     announcementStore.fetchAnnouncements()
   }
 }
 
+function addVisibilityListener() {
+  if (visibilityListenerRegistered) return
+  document.addEventListener('visibilitychange', onVisibilityChange)
+  visibilityListenerRegistered = true
+}
+
+function removeVisibilityListener() {
+  if (!visibilityListenerRegistered) return
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+  visibilityListenerRegistered = false
+}
+
+function clearDelayedAnnouncementFetch() {
+  if (!delayedAnnouncementFetch) return
+  clearTimeout(delayedAnnouncementFetch)
+  delayedAnnouncementFetch = null
+}
+
 watch(
-  () => authStore.isAuthenticated,
-  (isAuthenticated, oldValue) => {
-    if (isAuthenticated) {
-      // User logged in: preload subscriptions and start polling
-      subscriptionStore.fetchActiveSubscriptions().catch((error) => {
-        console.error('Failed to preload subscriptions:', error)
-      })
-      subscriptionStore.startPolling()
+  () => userSelfServiceFeaturesEnabled.value,
+  (enabled, oldValue) => {
+    clearDelayedAnnouncementFetch()
 
-      // Announcements: new login vs page refresh restore
-      if (oldValue === false) {
-        // New login: delay 3s then force fetch
-        setTimeout(() => announcementStore.fetchAnnouncements(true), 3000)
-      } else {
-        // Page refresh restore (oldValue was undefined)
-        announcementStore.fetchAnnouncements()
-      }
-
-      // Register visibility change listener
-      document.addEventListener('visibilitychange', onVisibilityChange)
-    } else {
-      // User logged out: clear data and stop polling
+    if (!enabled) {
       subscriptionStore.clear()
       announcementStore.reset()
-      document.removeEventListener('visibilitychange', onVisibilityChange)
+      removeVisibilityListener()
+      return
     }
+
+    subscriptionStore.fetchActiveSubscriptions().catch((error) => {
+      console.error('Failed to preload subscriptions:', error)
+    })
+    subscriptionStore.startPolling()
+
+    // Announcements: new login vs page refresh restore
+    if (oldValue === false) {
+      delayedAnnouncementFetch = setTimeout(() => {
+        delayedAnnouncementFetch = null
+        if (userSelfServiceFeaturesEnabled.value) {
+          announcementStore.fetchAnnouncements(true)
+        }
+      }, 3000)
+    } else {
+      announcementStore.fetchAnnouncements()
+    }
+
+    addVisibilityListener()
   },
   { immediate: true }
 )
 
 // Route change trigger (throttled by store)
 router.afterEach(() => {
-  if (authStore.isAuthenticated) {
+  if (userSelfServiceFeaturesEnabled.value) {
     announcementStore.fetchAnnouncements()
   }
 })
 
 onBeforeUnmount(() => {
-  document.removeEventListener('visibilitychange', onVisibilityChange)
+  clearDelayedAnnouncementFetch()
+  removeVisibilityListener()
 })
 
 onMounted(async () => {

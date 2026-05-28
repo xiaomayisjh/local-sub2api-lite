@@ -397,6 +397,7 @@ const authStore = useAuthStore()
 const appStore = useAppStore()
 
 const isAdmin = computed(() => authStore.isAdmin)
+const canCheckForUpdates = computed(() => isAdmin.value && !authStore.isLocalMode)
 
 const dropdownOpen = ref(false)
 const dropdownRef = ref<HTMLElement | null>(null)
@@ -429,7 +430,7 @@ function closeDropdown() {
 }
 
 async function refreshVersion(force = true) {
-  if (!isAdmin.value) return
+  if (!canCheckForUpdates.value) return
 
   // Reset update states when refreshing
   updateError.value = ''
@@ -522,7 +523,7 @@ function handleClickOutside(event: MouseEvent) {
 }
 
 onMounted(() => {
-  if (isAdmin.value) {
+  if (canCheckForUpdates.value) {
     // Use cached version if available, otherwise fetch
     appStore.fetchVersion(false)
   }

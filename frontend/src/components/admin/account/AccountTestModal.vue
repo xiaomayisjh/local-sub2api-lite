@@ -261,6 +261,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'close'): void
+  (e: 'finished', payload: { success: boolean }): void
 }>()
 
 const terminalRef = ref<HTMLElement | null>(null)
@@ -512,9 +513,11 @@ const handleEvent = (event: {
       }
       if (event.success) {
         status.value = 'success'
+        emit('finished', { success: true })
       } else {
         status.value = 'error'
         errorMessage.value = event.error || 'Test failed'
+        emit('finished', { success: false })
       }
       break
 
@@ -525,6 +528,7 @@ const handleEvent = (event: {
         addLine(streamingContent.value, 'text-green-300')
         streamingContent.value = ''
       }
+      emit('finished', { success: false })
       break
   }
 }

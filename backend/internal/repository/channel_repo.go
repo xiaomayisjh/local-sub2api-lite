@@ -8,21 +8,22 @@ import (
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	"github.com/Wei-Shaw/sub2api/internal/repository/sqldialect"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
 )
 
 type channelRepository struct {
-	db *sql.DB
+	db *RebindDB
 }
 
 // NewChannelRepository 创建渠道数据访问实例
 func NewChannelRepository(db *sql.DB) service.ChannelRepository {
-	return &channelRepository{db: db}
+	return &channelRepository{db: WrapDB(db)}
 }
 
 // runInTx 在事务中执行 fn，成功 commit，失败 rollback。
-func (r *channelRepository) runInTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
+func (r *channelRepository) runInTx(ctx context.Context, fn func(tx *RebindTx) error) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -36,7 +37,7 @@ func (r *channelRepository) runInTx(ctx context.Context, fn func(tx *sql.Tx) err
 }
 
 func (r *channelRepository) Create(ctx context.Context, channel *service.Channel) error {
-	return r.runInTx(ctx, func(tx *sql.Tx) error {
+	return r.runInTx(ctx, func(tx *RebindTx) error {
 		modelMappingJSON, err := marshalModelMapping(channel.ModelMapping)
 		if err != nil {
 			return err
@@ -120,7 +121,7 @@ func (r *channelRepository) GetByID(ctx context.Context, id int64) (*service.Cha
 }
 
 func (r *channelRepository) Update(ctx context.Context, channel *service.Channel) error {
-	return r.runInTx(ctx, func(tx *sql.Tx) error {
+	return r.runInTx(ctx, func(tx *RebindTx) error {
 		modelMappingJSON, err := marshalModelMapping(channel.ModelMapping)
 		if err != nil {
 			return err
@@ -193,9 +194,16 @@ func (r *channelRepository) List(ctx context.Context, params pagination.Paginati
 		argIdx++
 	}
 	if search != "" {
-		where = append(where, fmt.Sprintf("(c.name ILIKE $%d OR c.description ILIKE $%d)", argIdx, argIdx))
-		args = append(args, "%"+escapeLike(search)+"%")
-		argIdx++
+		pattern := "%" + escapeLike(search) + "%"
+		if sqldialect.UsesSQLite() {
+			where = append(where, fmt.Sprintf("(LOWER(c.name) LIKE LOWER($%d) ESCAPE '\\' OR LOWER(c.description) LIKE LOWER($%d) ESCAPE '\\')", argIdx, argIdx+1))
+			args = append(args, pattern, pattern)
+			argIdx += 2
+		} else {
+			where = append(where, fmt.Sprintf("(c.name ILIKE $%d ESCAPE '\\' OR c.description ILIKE $%d ESCAPE '\\')", argIdx, argIdx))
+			args = append(args, pattern)
+			argIdx++
+		}
 	}
 
 	whereClause := strings.Join(where, " AND ")
@@ -367,6 +375,17 @@ func (r *channelRepository) ListAll(ctx context.Context) ([]service.Channel, err
 
 // batchLoadGroupIDs 批量加载多个渠道的分组 ID
 func (r *channelRepository) batchLoadGroupIDs(ctx context.Context, channelIDs []int64) (map[int64][]int64, error) {
+	if len(channelIDs) == 0 {
+		return map[int64][]int64{}, nil
+	}
+	if sqldialect.UsesSQLite() {
+		query := fmt.Sprintf(
+			`SELECT channel_id, group_id FROM channel_groups
+			 WHERE channel_id IN (%s) ORDER BY channel_id, group_id`,
+			numberedPlaceholders(1, len(channelIDs)),
+		)
+		return scanChannelGroupIDs(ctx, r.db, query, int64SliceArgs(channelIDs)...)
+	}
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT channel_id, group_id FROM channel_groups
 		 WHERE channel_id = ANY($1) ORDER BY channel_id, group_id`,
@@ -378,6 +397,27 @@ func (r *channelRepository) batchLoadGroupIDs(ctx context.Context, channelIDs []
 	defer func() { _ = rows.Close() }()
 
 	groupMap := make(map[int64][]int64, len(channelIDs))
+	for rows.Next() {
+		var channelID, groupID int64
+		if err := rows.Scan(&channelID, &groupID); err != nil {
+			return nil, fmt.Errorf("scan group id: %w", err)
+		}
+		groupMap[channelID] = append(groupMap[channelID], groupID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate group ids: %w", err)
+	}
+	return groupMap, nil
+}
+
+func scanChannelGroupIDs(ctx context.Context, exec dbExec, query string, args ...any) (map[int64][]int64, error) {
+	rows, err := exec.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("batch load group ids: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	groupMap := make(map[int64][]int64)
 	for rows.Next() {
 		var channelID, groupID int64
 		if err := rows.Scan(&channelID, &groupID); err != nil {
@@ -450,6 +490,24 @@ func (r *channelRepository) GetChannelIDByGroupID(ctx context.Context, groupID i
 func (r *channelRepository) GetGroupsInOtherChannels(ctx context.Context, channelID int64, groupIDs []int64) ([]int64, error) {
 	if len(groupIDs) == 0 {
 		return nil, nil
+	}
+	if sqldialect.UsesSQLite() {
+		args := int64SliceArgs(groupIDs)
+		args = append(args, channelID)
+		rows, err := r.db.QueryContext(ctx,
+			fmt.Sprintf(
+				`SELECT group_id FROM channel_groups
+				 WHERE group_id IN (%s) AND channel_id != $%d`,
+				numberedPlaceholders(1, len(groupIDs)),
+				len(groupIDs)+1,
+			),
+			args...,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("get groups in other channels: %w", err)
+		}
+		defer func() { _ = rows.Close() }()
+		return scanInt64Rows(rows, "conflicting group id")
 	}
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT group_id FROM channel_groups WHERE group_id = ANY($1) AND channel_id != $2`,
@@ -526,6 +584,20 @@ func (r *channelRepository) GetGroupPlatforms(ctx context.Context, groupIDs []in
 	if len(groupIDs) == 0 {
 		return make(map[int64]string), nil
 	}
+	if sqldialect.UsesSQLite() {
+		rows, err := r.db.QueryContext(ctx,
+			fmt.Sprintf(
+				`SELECT id, platform FROM groups WHERE id IN (%s)`,
+				numberedPlaceholders(1, len(groupIDs)),
+			),
+			int64SliceArgs(groupIDs)...,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("get group platforms: %w", err)
+		}
+		defer rows.Close() //nolint:errcheck
+		return scanGroupPlatformRows(rows, len(groupIDs))
+	}
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, platform FROM groups WHERE id = ANY($1)`,
 		pq.Array(groupIDs),
@@ -535,7 +607,11 @@ func (r *channelRepository) GetGroupPlatforms(ctx context.Context, groupIDs []in
 	}
 	defer rows.Close() //nolint:errcheck
 
-	result := make(map[int64]string, len(groupIDs))
+	return scanGroupPlatformRows(rows, len(groupIDs))
+}
+
+func scanGroupPlatformRows(rows *sql.Rows, capacity int) (map[int64]string, error) {
+	result := make(map[int64]string, capacity)
 	for rows.Next() {
 		var id int64
 		var platform string
@@ -548,4 +624,35 @@ func (r *channelRepository) GetGroupPlatforms(ctx context.Context, groupIDs []in
 		return nil, fmt.Errorf("iterate group platforms: %w", err)
 	}
 	return result, nil
+}
+
+func scanInt64Rows(rows *sql.Rows, label string) ([]int64, error) {
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan %s: %w", label, err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate %s: %w", label, err)
+	}
+	return ids, nil
+}
+
+func numberedPlaceholders(start, count int) string {
+	parts := make([]string, count)
+	for i := range parts {
+		parts[i] = fmt.Sprintf("$%d", start+i)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func int64SliceArgs(ids []int64) []any {
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	return args
 }

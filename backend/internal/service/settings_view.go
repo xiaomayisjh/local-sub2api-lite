@@ -289,6 +289,9 @@ type PublicSettings struct {
 
 	// 风控中心功能开关
 	RiskControlEnabled bool `json:"risk_control_enabled"`
+
+	// RunMode 运行模式（standard / simple / local），供前端在登录前识别桌面版等场景
+	RunMode string `json:"run_mode"`
 }
 
 type LoginAgreementDocument struct {

@@ -6009,7 +6009,7 @@
 
           <!-- Provider Management -->
           <PaymentProviderList
-            v-if="form.payment_enabled"
+            v-if="form.payment_enabled && paymentAdminAvailable"
             :providers="providers"
             :loading="providersLoading"
             :can-create="hasAnyPaymentTypeEnabled"
@@ -6570,7 +6570,7 @@ import EmailTemplateEditor from "@/views/admin/settings/EmailTemplateEditor.vue"
 import { useClipboard } from "@/composables/useClipboard";
 import { affiliatesAPI, type AffiliateAdminEntry, type SimpleUser as AffiliateSimpleUser } from "@/api/admin/affiliates";
 import { extractApiErrorMessage, extractI18nErrorMessage } from "@/utils/apiError";
-import { useAppStore } from "@/stores";
+import { useAppStore, useAuthStore } from "@/stores";
 import { useAdminSettingsStore } from "@/stores/adminSettings";
 import { normalizeVisibleMethod } from "@/components/payment/paymentFlow";
 import {
@@ -6582,8 +6582,12 @@ import {
 
 const { t, locale } = useI18n();
 const appStore = useAppStore();
+const authStore = useAuthStore();
 const adminSettingsStore = useAdminSettingsStore();
 const isZhLocale = computed(() => locale.value.startsWith("zh"));
+const paymentAdminAvailable = computed(
+  () => !authStore.isLocalMode && appStore.cachedPublicSettings?.run_mode !== "local",
+);
 
 function localText(zh: string, en: string): string {
   return isZhLocale.value ? zh : en;
@@ -8934,6 +8938,12 @@ function showProviderEnablementConflict(
 }
 
 async function loadProviders() {
+  if (!paymentAdminAvailable.value) {
+    providers.value = [];
+    providersLoading.value = false;
+    return;
+  }
+
   providersLoading.value = true;
   try {
     const res = await adminAPI.payment.getProviders();
@@ -9099,7 +9109,9 @@ onMounted(() => {
   loadStreamTimeoutSettings();
   loadRectifierSettings();
   loadBetaPolicySettings();
-  loadProviders();
+  if (paymentAdminAvailable.value) {
+    loadProviders();
+  }
 });
 
 // =========================

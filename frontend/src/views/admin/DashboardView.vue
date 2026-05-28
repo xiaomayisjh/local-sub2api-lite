@@ -231,7 +231,7 @@
                   @change="onDateRangeChange"
                 />
               </div>
-              <button @click="loadDashboardStats" :disabled="chartsLoading" class="btn btn-secondary">
+              <button @click="handleManualRefresh" :disabled="chartsLoading" class="btn btn-secondary">
                 {{ t('common.refresh') }}
               </button>
               <div class="ml-auto flex items-center gap-2">
@@ -288,15 +288,25 @@
           </div>
         </div>
       </template>
+
+      <div v-else class="flex flex-col items-center justify-center gap-3 py-16 text-center">
+        <p class="text-sm text-gray-500 dark:text-gray-400">
+          {{ t('admin.dashboard.failedToLoad') }}
+        </p>
+        <button type="button" class="btn btn-secondary" @click="handleManualRefresh">
+          {{ t('common.refresh') }}
+        </button>
+      </div>
     </div>
   </AppLayout>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
 
 const { t } = useI18n()
 import { adminAPI } from '@/api/admin'
@@ -339,6 +349,7 @@ ChartJS.register(
 )
 
 const appStore = useAppStore()
+const authStore = useAuthStore()
 const router = useRouter()
 const stats = ref<DashboardStats | null>(null)
 const loading = ref(false)
@@ -537,7 +548,10 @@ const formatNumber = (value: number): string => {
   return value.toLocaleString()
 }
 
-const formatCost = (value: number): string => {
+const formatCost = (value: number | null | undefined): string => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '0.0000'
+  }
   if (value >= 1000) {
     return (value / 1000).toFixed(2) + 'K'
   } else if (value >= 1) {
@@ -588,7 +602,10 @@ const onDateRangeChange = (range: {
 }
 
 // Load data
-const loadDashboardSnapshot = async (includeStats: boolean) => {
+const loadDashboardSnapshot = async (includeStats: boolean, force = false) => {
+  if (!authStore.isAuthenticated || !authStore.isAdmin) {
+    return
+  }
   const currentSeq = ++chartLoadSeq
   if (includeStats && !stats.value) {
     loading.value = true
@@ -603,7 +620,8 @@ const loadDashboardSnapshot = async (includeStats: boolean) => {
       include_trend: true,
       include_model_stats: true,
       include_group_stats: false,
-      include_users_trend: false
+      include_users_trend: false,
+      ...(force ? { force: 1 } : {})
     })
     if (currentSeq !== chartLoadSeq) return
     if (includeStats && response.stats) {
@@ -624,6 +642,9 @@ const loadDashboardSnapshot = async (includeStats: boolean) => {
 }
 
 const loadUsersTrend = async () => {
+  if (!authStore.isAuthenticated || !authStore.isAdmin) {
+    return
+  }
   const currentSeq = ++usersTrendLoadSeq
   userTrendLoading.value = true
   try {
@@ -647,6 +668,9 @@ const loadUsersTrend = async () => {
 }
 
 const loadUserSpendingRanking = async () => {
+  if (!authStore.isAuthenticated || !authStore.isAdmin) {
+    return
+  }
   const currentSeq = ++rankingLoadSeq
   rankingLoading.value = true
   rankingError.value = false
@@ -676,9 +700,9 @@ const loadUserSpendingRanking = async () => {
   }
 }
 
-const loadDashboardStats = async () => {
+const loadDashboardStats = async (force = false) => {
   await Promise.all([
-    loadDashboardSnapshot(true),
+    loadDashboardSnapshot(true, force),
     loadUsersTrend(),
     loadUserSpendingRanking()
   ])
@@ -692,8 +716,34 @@ const loadChartData = async () => {
   ])
 }
 
+const handleManualRefresh = () => {
+  loadDashboardStats(true)
+}
+
+// 本地单用户模式下自动轮询，避免用户看到陈旧的零值。
+let autoRefreshTimer: ReturnType<typeof setInterval> | null = null
+const startAutoRefresh = () => {
+  if (autoRefreshTimer) return
+  if (!authStore.isLocalMode) return
+  autoRefreshTimer = setInterval(() => {
+    if (document.hidden) return
+    loadDashboardStats(false)
+  }, 15000)
+}
+const stopAutoRefresh = () => {
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer)
+    autoRefreshTimer = null
+  }
+}
+
 onMounted(() => {
   loadDashboardStats()
+  startAutoRefresh()
+})
+
+onBeforeUnmount(() => {
+  stopAutoRefresh()
 })
 </script>
 

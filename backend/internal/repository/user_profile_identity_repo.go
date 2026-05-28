@@ -20,6 +20,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/identityadoptiondecision"
 	dbpredicate "github.com/Wei-Shaw/sub2api/ent/predicate"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/repository/sqldialect"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
@@ -622,10 +623,10 @@ func (r *userRepository) RecordProviderGrant(ctx context.Context, input Provider
 		return false, fmt.Errorf("sql executor is not configured")
 	}
 
-	result, err := exec.ExecContext(ctx, `
+	result, err := exec.ExecContext(ctx, sqldialect.Rebind(`
 INSERT INTO user_provider_default_grants (user_id, provider_type, grant_reason)
 VALUES ($1, $2, $3)
-ON CONFLICT (user_id, provider_type, grant_reason) DO NOTHING`,
+ON CONFLICT (user_id, provider_type, grant_reason) DO NOTHING`),
 		input.UserID,
 		strings.TrimSpace(input.ProviderType),
 		string(input.GrantReason),
@@ -733,10 +734,10 @@ func (r *userRepository) GetUserAvatar(ctx context.Context, userID int64) (*serv
 		return nil, err
 	}
 
-	rows, err := exec.QueryContext(ctx, `
+	rows, err := exec.QueryContext(ctx, sqldialect.Rebind(`
 SELECT storage_provider, storage_key, url, content_type, byte_size, sha256
 FROM user_avatars
-WHERE user_id = $1`, userID)
+WHERE user_id = $1`), userID)
 	if err != nil {
 		return nil, err
 	}
@@ -769,7 +770,7 @@ func (r *userRepository) UpsertUserAvatar(ctx context.Context, userID int64, inp
 		return nil, err
 	}
 
-	_, err = exec.ExecContext(ctx, `
+	_, err = exec.ExecContext(ctx, sqldialect.Rebind(`
 INSERT INTO user_avatars (user_id, storage_provider, storage_key, url, content_type, byte_size, sha256, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
 ON CONFLICT (user_id) DO UPDATE SET
@@ -779,7 +780,7 @@ ON CONFLICT (user_id) DO UPDATE SET
 	content_type = EXCLUDED.content_type,
 	byte_size = EXCLUDED.byte_size,
 	sha256 = EXCLUDED.sha256,
-	updated_at = NOW()`,
+	updated_at = NOW()`),
 		userID,
 		strings.TrimSpace(input.StorageProvider),
 		strings.TrimSpace(input.StorageKey),
@@ -807,7 +808,7 @@ func (r *userRepository) DeleteUserAvatar(ctx context.Context, userID int64) err
 	if err != nil {
 		return err
 	}
-	_, err = exec.ExecContext(ctx, `DELETE FROM user_avatars WHERE user_id = $1`, userID)
+	_, err = exec.ExecContext(ctx, sqldialect.Rebind(`DELETE FROM user_avatars WHERE user_id = $1`), userID)
 	return err
 }
 

@@ -181,19 +181,26 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
-import { useSubscriptionStore } from '@/stores'
+import { useAppStore, useAuthStore, useSubscriptionStore } from '@/stores'
 import type { UserSubscription } from '@/types'
 
 const { t } = useI18n()
 
 const subscriptionStore = useSubscriptionStore()
+const authStore = useAuthStore()
+const appStore = useAppStore()
 
 const containerRef = ref<HTMLElement | null>(null)
 const tooltipOpen = ref(false)
 
 // Use store data instead of local state
 const activeSubscriptions = computed(() => subscriptionStore.activeSubscriptions)
-const hasActiveSubscriptions = computed(() => subscriptionStore.hasActiveSubscriptions)
+const userSelfServiceFeaturesEnabled = computed(() =>
+  authStore.isAuthenticated && !authStore.isSimpleMode && !appStore.backendModeEnabled
+)
+const hasActiveSubscriptions = computed(() =>
+  userSelfServiceFeaturesEnabled.value && subscriptionStore.hasActiveSubscriptions
+)
 
 const displaySubscriptions = computed(() => {
   // Sort by most usage (highest percentage first)
@@ -294,6 +301,9 @@ function handleClickOutside(event: MouseEvent) {
 
 onMounted(() => {
   document.addEventListener('click', handleClickOutside)
+  if (!userSelfServiceFeaturesEnabled.value) {
+    return
+  }
   // Trigger initial fetch if not already loaded
   // The actual data loading is handled by App.vue globally
   subscriptionStore.fetchActiveSubscriptions().catch((error) => {
