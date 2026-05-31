@@ -660,6 +660,44 @@ export async function setPrivacy(id: number): Promise<Account> {
   return data
 }
 
+/**
+ * One account inside a duplicate group (no plaintext credentials returned).
+ */
+export interface DuplicateAccountInfo {
+  id: number
+  name: string
+  platform: string
+  type: string
+  status: string
+  created_at: string
+  last_used_at?: string | null
+  /** Backend-suggested "keep" account (the earliest-created one in the group). */
+  suggest_keep: boolean
+}
+
+export interface DuplicateGroupResult {
+  accounts: DuplicateAccountInfo[]
+}
+
+export interface FindDuplicatesResult {
+  groups: DuplicateGroupResult[]
+  /** Sum across groups of (members - 1): how many would be removed if you keep one per group. */
+  total_duplicates: number
+}
+
+/**
+ * Find duplicate accounts among the selected IDs (compared by credential identity,
+ * within the same platform+type). Only groups them — never deletes.
+ * @param accountIds - Array of account IDs to compare
+ * @returns Duplicate groups with a suggested "keep" per group
+ */
+export async function findDuplicates(accountIds: number[]): Promise<FindDuplicatesResult> {
+  const { data } = await apiClient.post<FindDuplicatesResult>('/admin/accounts/find-duplicates', {
+    account_ids: accountIds
+  })
+  return data
+}
+
 export const accountsAPI = {
   list,
   listWithEtag,
@@ -698,7 +736,8 @@ export const accountsAPI = {
   getAntigravityDefaultModelMapping,
   batchClearError,
   batchRefresh,
-  setPrivacy
+  setPrivacy,
+  findDuplicates
 }
 
 export default accountsAPI

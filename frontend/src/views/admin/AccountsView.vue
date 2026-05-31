@@ -147,6 +147,22 @@
                         {{ selIds.length }}
                       </span>
                     </button>
+                    <button
+                      class="account-tools-menu-item"
+                      @click="openFindDuplicates"
+                      :disabled="selIds.length < 2"
+                    >
+                      <span class="account-tools-menu-icon bg-rose-50 text-rose-600 dark:bg-rose-900/30 dark:text-rose-300">
+                        <Icon name="copy" size="sm" />
+                      </span>
+                      <span class="flex-1 text-left">{{ t('admin.accounts.findDuplicates') }}</span>
+                      <span
+                        v-if="selIds.length >= 2"
+                        class="rounded-full bg-rose-100 px-2 py-0.5 text-xs font-medium text-rose-700 dark:bg-rose-900/40 dark:text-rose-300"
+                      >
+                        {{ selIds.length }}
+                      </span>
+                    </button>
 
                     <div class="my-2 border-t border-gray-100 dark:border-gray-700"></div>
                     <div class="px-2 py-2">
@@ -399,6 +415,12 @@
       @start="handleBatchTestStart"
       @applied="reload"
     />
+    <FindDuplicateAccountsModal
+      :show="showFindDuplicates"
+      :account-ids="selIds"
+      @close="showFindDuplicates = false"
+      @deleted="handleDuplicatesDeleted"
+    />
   </AppLayout>
 </template>
 
@@ -438,6 +460,7 @@ import Icon from '@/components/icons/Icon.vue'
 import ErrorPassthroughRulesModal from '@/components/admin/ErrorPassthroughRulesModal.vue'
 import TLSFingerprintProfilesModal from '@/components/admin/TLSFingerprintProfilesModal.vue'
 import BatchTestAccountsModal from '@/components/admin/BatchTestAccountsModal.vue'
+import FindDuplicateAccountsModal from '@/components/admin/FindDuplicateAccountsModal.vue'
 import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { extractI18nErrorMessage } from '@/utils/apiError'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
@@ -520,6 +543,7 @@ const exportingData = ref(false)
 
 // Batch test
 const showBatchTest = ref(false)
+const showFindDuplicates = ref(false)
 const batchTestProgress = ref<{accountId: number, model: string, modelSource?: string, success: boolean, error?: string, attempts?: number, fellBack?: string}[]>([])
 const batchTestRunning = ref(false)
 
@@ -1032,6 +1056,20 @@ const openBatchTest = () => {
   closeAccountToolsDropdown()
   batchTestProgress.value = []
   showBatchTest.value = true
+}
+
+const openFindDuplicates = () => {
+  if (selIds.value.length < 2) return
+  closeAccountToolsDropdown()
+  showFindDuplicates.value = true
+}
+
+// 去重弹窗删除完成后：把已删 ID 从选中集合里移除并刷新列表。
+const handleDuplicatesDeleted = (ids: number[]) => {
+  if (ids.length > 0) {
+    removeSelectedAccounts(ids)
+  }
+  reload()
 }
 
 const handleBatchTestStart = async (concurrency: number) => {

@@ -67,12 +67,14 @@ type DataImportRequest struct {
 }
 
 type DataImportResult struct {
-	ProxyCreated   int               `json:"proxy_created"`
-	ProxyReused    int               `json:"proxy_reused"`
-	ProxyFailed    int               `json:"proxy_failed"`
-	AccountCreated int               `json:"account_created"`
-	AccountFailed  int               `json:"account_failed"`
-	Errors         []DataImportError `json:"errors,omitempty"`
+	ProxyCreated   int                 `json:"proxy_created"`
+	ProxyReused    int                 `json:"proxy_reused"`
+	ProxyFailed    int                 `json:"proxy_failed"`
+	AccountCreated int                 `json:"account_created"`
+	AccountFailed  int                 `json:"account_failed"`
+	AccountSkipped int                 `json:"account_skipped"`
+	Errors         []DataImportError   `json:"errors,omitempty"`
+	Skipped        []DataImportSkipped `json:"skipped,omitempty"`
 }
 
 type DataImportError struct {
@@ -80,6 +82,15 @@ type DataImportError struct {
 	Name     string `json:"name,omitempty"`
 	ProxyKey string `json:"proxy_key,omitempty"`
 	Message  string `json:"message"`
+}
+
+// DataImportSkipped 记录因判重被跳过的导入账号项（智能去重）。
+type DataImportSkipped struct {
+	Name string `json:"name,omitempty"`
+	// Reason 人类可读原因，例如"与已有账号「xxx」重复"或"与本批第 N 条重复"。
+	Reason string `json:"reason"`
+	// DuplicateOf 命中的已有账号 ID（与库内账号重复时填写；与本批内重复时为 0）。
+	DuplicateOf int64 `json:"duplicate_of,omitempty"`
 }
 
 func buildProxyKey(protocol, host string, port int, username, password string) string {
@@ -274,6 +285,15 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 	// 收集需要异步设置隐私的 Antigravity OAuth 账号
 	var privacyAccounts []*service.Account
 
+	// 智能去重：用库内已有账号构建身份索引，导入时跳过重复项（按身份指纹，同 platform+type 内比）。
+	// 加载失败不致命——退化为"不去重"，照常导入，避免因索引构建出错挡住整个导入。
+	dedupIndex := newAccountIdentityIndex()
+	if existingAccounts, listErr := h.listAccountsFiltered(ctx, "", "", "", "", 0, "", "created_at", "asc"); listErr != nil {
+		slog.Warn("import_data_dedup_index_failed", "err", listErr)
+	} else {
+		dedupIndex.AddExisting(existingAccounts)
+	}
+
 	for i := range dataPayload.Accounts {
 		item := dataPayload.Accounts[i]
 		if err := validateDataAccount(item); err != nil {
@@ -304,6 +324,29 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 
 		enrichCredentialsFromIDToken(&item)
 
+		// 判重：与已有账号库 + 本批已处理项比对。命中则跳过（保留已有，不覆盖）。
+		probe := &service.Account{
+			Platform:    item.Platform,
+			Type:        item.Type,
+			Credentials: item.Credentials,
+		}
+		if dupID, dupName, found := dedupIndex.FindDuplicate(probe); found {
+			result.AccountSkipped++
+			skip := DataImportSkipped{Name: item.Name}
+			if dupID > 0 {
+				skip.DuplicateOf = dupID
+				if dupName != "" {
+					skip.Reason = "与已有账号「" + dupName + "」重复，已跳过"
+				} else {
+					skip.Reason = "与已有账号重复，已跳过"
+				}
+			} else {
+				skip.Reason = "与本批先前的导入项重复，已跳过"
+			}
+			result.Skipped = append(result.Skipped, skip)
+			continue
+		}
+
 		accountInput := &service.CreateAccountInput{
 			Name:                 item.Name,
 			Notes:                item.Notes,
@@ -331,6 +374,8 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 			})
 			continue
 		}
+		// 把刚创建的账号登记进索引，使本批后续项也能与它判重。
+		dedupIndex.AddBatchItem(created, created.ID, created.Name)
 		// 收集 Antigravity OAuth 账号，稍后异步设置隐私
 		if created.Platform == service.PlatformAntigravity && created.Type == service.AccountTypeOAuth {
 			privacyAccounts = append(privacyAccounts, created)

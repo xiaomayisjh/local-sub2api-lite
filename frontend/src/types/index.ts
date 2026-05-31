@@ -1109,13 +1109,21 @@ export interface AdminDataImportError {
   message: string
 }
 
+export interface AdminDataImportSkipped {
+  name?: string
+  reason: string
+  duplicate_of?: number
+}
+
 export interface AdminDataImportResult {
   proxy_created: number
   proxy_reused: number
   proxy_failed: number
   account_created: number
   account_failed: number
+  account_skipped?: number
   errors?: AdminDataImportError[]
+  skipped?: AdminDataImportSkipped[]
 }
 
 export interface CodexSessionImportRequest {
