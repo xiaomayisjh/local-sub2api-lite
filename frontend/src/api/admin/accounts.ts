@@ -614,7 +614,7 @@ export interface BatchOperationResult {
   total: number
   success: number
   failed: number
-  errors?: Array<{ account_id: number; error: string }>
+  errors?: Array<{ account_id: number; error: string; reason?: string }>
   warnings?: Array<{ account_id: number; warning: string }>
 }
 

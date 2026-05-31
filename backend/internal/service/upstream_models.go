@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 )
 
 const upstreamModelsBodyLimit int64 = 8 << 20
@@ -125,6 +127,160 @@ func (s *AccountTestService) FetchUpstreamSupportedModels(ctx context.Context, a
 	}
 
 	return models, nil
+}
+
+// TestableModelsSource 描述测试模型来源，便于 UI 区分 live vs fallback。
+type TestableModelsSource string
+
+const (
+	// TestableModelsSourceUpstream 模型列表来自上游 live 接口。
+	TestableModelsSourceUpstream TestableModelsSource = "upstream"
+	// TestableModelsSourceFallback 模型列表来自 pkg/<platform> 内置默认列表（OAuth scope 限制或上游不支持时使用）。
+	TestableModelsSourceFallback TestableModelsSource = "fallback"
+)
+
+// FetchTestableModelsForAccount 返回可用于"测试"的模型列表。
+//
+// 与 FetchUpstreamSupportedModels 的差别：
+//   - 后者是给"同步模型入库"用的严格 live 路径，OAuth 场景常因 scope 不带 models.read
+//     直接 unsupported / 4xx，导致批量测试 100% 失败。
+//   - 这里在 live 路径失败 / 不支持时，对 OAuth 账号回退到平台内置的 DefaultModelIDs()。
+//     测试只是想验证"账号 + token 还能不能调通"，并不需要严格的真实上游清单。
+//
+// 返回：(模型列表, 来源, 错误)。
+//
+// Fallback 触发条件（与用户确认）：
+//   - OAuth/setup-token 账号：live 失败一律 fallback（OAuth scope 常不带 models.read，4xx 是常态）。
+//   - API-Key 账号：仅在"瞬时/服务端错误"（5xx、网络错误、超时、连接中断）时 fallback；
+//     鉴权/配置类错误（401/403、invalid api key、invalid base url、unsupported）保持硬失败，
+//     避免掩盖 base_url/key 配错。
+//   - Bedrock/Vertex/ServiceAccount：本就没有标准 /v1/models，live 失败时 fallback 到 claude 默认模型，
+//     让它们仍有机会用真实模型跑通连通性测试。
+func (s *AccountTestService) FetchTestableModelsForAccount(ctx context.Context, account *Account) ([]string, TestableModelsSource, error) {
+	models, err := s.FetchUpstreamSupportedModels(ctx, account)
+	if err == nil && len(models) > 0 {
+		return models, TestableModelsSourceUpstream, nil
+	}
+
+	if account != nil && shouldFallbackTestableModels(account, err) {
+		if fallback := fallbackTestableModelIDs(account); len(fallback) > 0 {
+			return fallback, TestableModelsSourceFallback, nil
+		}
+	}
+
+	if err == nil {
+		return nil, "", newUpstreamModelSyncUpstreamError("Upstream returned no supported models", nil)
+	}
+	return nil, "", err
+}
+
+// shouldFallbackTestableModels 决定 live 拉取失败后是否回退到平台内置模型列表。
+func shouldFallbackTestableModels(account *Account, fetchErr error) bool {
+	if account == nil {
+		return false
+	}
+
+	// OAuth/setup-token：live 失败一律 fallback。
+	if account.IsOAuth() {
+		return true
+	}
+
+	// Bedrock / Vertex ServiceAccount：没有标准 /v1/models，任何 live 失败都 fallback。
+	if account.IsBedrock() || account.Type == AccountTypeServiceAccount {
+		return true
+	}
+
+	// 其余（主要是 API-Key）：仅瞬时/服务端错误才 fallback，鉴权/配置错误保持硬失败。
+	return isTransientUpstreamModelError(fetchErr)
+}
+
+// isTransientUpstreamModelError 判断 live 拉取错误是否为"瞬时/服务端"类（值得 fallback 后用默认模型测一发），
+// 而非"账号配错"类（应该硬失败暴露给用户）。
+//
+//   - 网络错误 / 超时 / 连接中断（UpstreamModelSyncErrorUpstream 且非明确 4xx）→ 瞬时
+//   - HTTP 5xx → 瞬时（上游/中转临时不可用）
+//   - HTTP 401/403、invalid api key、invalid base url、unsupported、configuration → 非瞬时
+func isTransientUpstreamModelError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var syncErr *UpstreamModelSyncError
+	if errors.As(err, &syncErr) {
+		switch syncErr.Kind {
+		case UpstreamModelSyncErrorConfiguration, UpstreamModelSyncErrorUnsupported:
+			// base_url 配错 / key 缺失 / 平台不支持 —— 暴露给用户，不要 fallback 掩盖。
+			return false
+		case UpstreamModelSyncErrorUpstream:
+			// 进一步看是不是明确的鉴权类 HTTP 状态。
+		}
+	}
+
+	msg := strings.ToLower(err.Error())
+
+	// 明确的鉴权/客户端配置错误：不 fallback。
+	authNeedles := []string{
+		"http 401", "http 403", "http 400",
+		"unauthorized", "forbidden",
+		"invalid api key", "invalid_api_key",
+		"invalid base url",
+		"api key is", // "No ... API key is available"
+	}
+	for _, n := range authNeedles {
+		if strings.Contains(msg, n) {
+			return false
+		}
+	}
+
+	// HTTP 404：这个上游/中转根本没有 /v1/models 端点（Deepseek 等很多中转如此），
+	// 不是临时故障也不是鉴权错。仍然 fallback——用平台内置默认模型去测连通性，
+	// 让"没有 models 端点但能正常对话"的中转账号有机会跑通；fallbackTestableModelIDs
+	// 会按账号的实际 platform 选对默认模型（OpenAI 协议的中转 → gpt-*，而非 claude-*）。
+	// 这里显式列出只为表达意图——404 归"可 fallback"，避免日后误把它加进 authNeedles。
+	notFoundNeedles := []string{"http 404", "returned http 404", "status 404", "404"}
+	for _, n := range notFoundNeedles {
+		if strings.Contains(msg, n) {
+			return true
+		}
+	}
+
+	// 其余（5xx、context deadline exceeded、EOF、connection reset、no such host、
+	// "failed to request upstream model list" 等网络层错误）视为瞬时，允许 fallback。
+	return true
+}
+
+// fallbackTestableModelIDs 给 OAuth 账号在 live 接口不可用时提供平台内置 known-good 模型列表。
+// 不针对 API-Key 账号——它们的 live /v1/models 工作良好，拉不到通常意味着 base_url/key 错。
+func fallbackTestableModelIDs(account *Account) []string {
+	if account == nil {
+		return nil
+	}
+	switch {
+	case account.IsAnthropic():
+		return claude.DefaultModelIDs()
+	case account.IsOpenAI():
+		return openai.DefaultModelIDs()
+	case account.IsGemini():
+		ids := make([]string, 0, len(geminicli.DefaultModels))
+		for _, m := range geminicli.DefaultModels {
+			if id := strings.TrimSpace(m.ID); id != "" {
+				ids = append(ids, id)
+			}
+		}
+		return ids
+	case account.Platform == PlatformAntigravity:
+		// Antigravity OAuth 已有 antigravity.FetchAvailableModels 的 live 路径，
+		// 极少失败；万一失败也用 DefaultGeminiModels 兜底。
+		models := antigravity.DefaultGeminiModels()
+		ids := make([]string, 0, len(models))
+		for _, m := range models {
+			if id := strings.TrimSpace(strings.TrimPrefix(m.Name, "models/")); id != "" {
+				ids = append(ids, id)
+			}
+		}
+		return ids
+	}
+	return nil
 }
 
 func (s *AccountTestService) buildUpstreamModelsRequest(ctx context.Context, account *Account) (*http.Request, error) {

@@ -11,6 +11,7 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
@@ -187,6 +188,255 @@ func truncateErrorMessage(msg string) string {
 		return msg
 	}
 	return msg[:maxLen] + "..."
+}
+
+// extractRefreshErrorMessage 从 OAuth 刷新失败返回的 error 中提取人类可读的摘要：
+//   - 优先解析 ApplicationError 的 Message（去掉 reason= 包裹的格式串）；
+//   - 尝试解析嵌套的 upstream JSON 错误体，提取 .error.message；
+//   - 否则回退到 err.Error()。
+//
+// 截断到 truncateErrorMessage 的长度上限，作为账号 error_message 持久化。
+func extractRefreshErrorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	// 只在 err 真的是 ApplicationError 时走结构化路径；FromError 在非应用错误上
+	// 会返回 cause 包装的 UnknownMessage="internal error"，那会把上游 body 信息覆盖掉。
+	var appErr *infraerrors.ApplicationError
+	if errors.As(err, &appErr) && appErr != nil && appErr.Message != "" && appErr.Message != infraerrors.UnknownMessage {
+		// 在 message 内寻找 body: {"error":{"message":"..."}} 这种内嵌 JSON 段。
+		if inner := extractUpstreamJSONErrorMessage(appErr.Message); inner != "" {
+			return truncateErrorMessage(inner)
+		}
+		// 当 reason 已经能完整表达错误时优先用 reason，否则用 message。
+		if appErr.Reason != "" && len(appErr.Message) > 200 {
+			return truncateErrorMessage(appErr.Reason + ": " + firstLine(appErr.Message))
+		}
+		return truncateErrorMessage(appErr.Message)
+	}
+	// 非 ApplicationError（如 Claude OAuth 的 fmt.Errorf("token refresh failed: status 400, body: ...")）
+	// 直接从原始 err.Error() 里提取 body JSON 的 message 字段。
+	raw := err.Error()
+	if inner := extractUpstreamJSONErrorMessage(raw); inner != "" {
+		return truncateErrorMessage(inner)
+	}
+	return truncateErrorMessage(raw)
+}
+
+// extractUpstreamJSONErrorMessage 在错误字符串中查找 body: {"error":{"message":"..."}} 形式的 JSON 片段
+// 并提取 message 字段。失败时返回空串，由调用方回退。
+func extractUpstreamJSONErrorMessage(s string) string {
+	idx := strings.Index(s, "body: ")
+	if idx < 0 {
+		idx = strings.Index(s, "body=")
+	}
+	if idx < 0 {
+		return ""
+	}
+	// 从 body 之后开始截取，去除转义并尝试 JSON 解码。
+	raw := s[idx:]
+	if pos := strings.Index(raw, "{"); pos > 0 {
+		raw = raw[pos:]
+	} else {
+		return ""
+	}
+	// 处理 fmt.Sprintf("%q", ...) 产生的双重转义形式。
+	if strings.Contains(raw, `\"`) {
+		if unq, err := strconv.Unquote(`"` + strings.ReplaceAll(raw, `"`, `\"`) + `"`); err == nil {
+			raw = unq
+		} else {
+			raw = strings.ReplaceAll(raw, `\"`, `"`)
+			raw = strings.ReplaceAll(raw, `\n`, "\n")
+			raw = strings.ReplaceAll(raw, `\\`, `\`)
+		}
+	}
+	// 截到最外层 } 配对。
+	if end := lastJSONBraceEnd(raw); end > 0 {
+		raw = raw[:end+1]
+	}
+	var parsed struct {
+		Error struct {
+			Message string `json:"message"`
+			Code    string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err == nil && parsed.Error.Message != "" {
+		if parsed.Error.Code != "" {
+			return parsed.Error.Code + ": " + parsed.Error.Message
+		}
+		return parsed.Error.Message
+	}
+	return ""
+}
+
+// lastJSONBraceEnd 返回 raw 中最外层 JSON 对象的右括号位置。
+func lastJSONBraceEnd(raw string) int {
+	depth := 0
+	for i, ch := range raw {
+		switch ch {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// firstLine 返回字符串第一行（去掉换行后的内容），用于压缩冗长堆栈或多行 message。
+func firstLine(s string) string {
+	if i := strings.IndexAny(s, "\r\n"); i > 0 {
+		return strings.TrimSpace(s[:i])
+	}
+	return strings.TrimSpace(s)
+}
+
+// Refresh-error reason 码，前端 i18n namespace = admin.accounts.refresh.errors
+const (
+	refreshReasonRTRevoked        = "REFRESH_TOKEN_REVOKED"      // refresh_token 已失效/被吊销，必须重新授权
+	refreshReasonRTReused         = "REFRESH_TOKEN_REUSED"       // refresh_token 已被使用过（OpenAI rotation）
+	refreshReasonInvalidClient    = "OAUTH_INVALID_CLIENT"       // 客户端配置错误
+	refreshReasonAccessDenied     = "OAUTH_ACCESS_DENIED"        // 上游拒绝访问
+	refreshReasonNoRefreshToken   = "OAUTH_NO_REFRESH_TOKEN"     // 账号 credentials 里压根没有 refresh_token
+	refreshReasonMissingProjectID = "OAUTH_MISSING_PROJECT_ID"   // Gemini/Antigravity project_id 缺失
+	refreshReasonUpstreamUnavail  = "OAUTH_UPSTREAM_UNAVAILABLE" // OAuth 服务网络/EOF/超时，临时故障
+	refreshReasonUpstreamRejected = "OAUTH_UPSTREAM_REJECTED"    // 上游返回 4xx（非上面那些已分类的），还能重试
+	refreshReasonUnknown          = "OAUTH_REFRESH_FAILED"       // 兜底
+)
+
+// classifyRefreshError 把 OAuth 刷新失败的 error 翻译成带 HTTP code + reason 的 ApplicationError，
+// 让前端能根据 reason 找到对应 i18n 文案、并展示合适的 "重新授权" / "稍后再试" 操作。
+//
+// 输入 err 可能是：
+//   - 上游 OAuth 返回的 4xx + body（含 invalid_grant / invalid_refresh_token 等）
+//   - 网络层错误（unexpected EOF / connection refused / context deadline）
+//   - 配置错误（缺 project_id、缺 refresh_token）
+//   - 已经是 ApplicationError 的 OPENAI_OAUTH_* 系列
+//
+// 输出固定为 ApplicationError，保证 response.ErrorFrom 能拿到正确的 status + reason。
+func classifyRefreshError(err error) *infraerrors.ApplicationError {
+	if err == nil {
+		return nil
+	}
+	// 只接受真正的 ApplicationError 的 Reason/Code；FromError 会给 plain error 套一个 code=500 的壳，
+	// 那会把后面的 4xx 兜底路径误触发。
+	var appErr *infraerrors.ApplicationError
+	if !errors.As(err, &appErr) {
+		appErr = nil
+	}
+	originalReason := ""
+	if appErr != nil {
+		originalReason = appErr.Reason
+	}
+
+	msg := extractRefreshErrorMessage(err) // 给前端展示用的人类可读摘要
+	low := strings.ToLower(err.Error())
+
+	// 1) 不可恢复：refresh_token 已被吊销/失效 → 409 + REFRESH_TOKEN_REVOKED
+	if strings.Contains(low, "refresh token not found") ||
+		strings.Contains(low, "invalid_grant") ||
+		strings.Contains(low, "invalid_refresh_token") {
+		return infraerrors.Conflict(refreshReasonRTRevoked, msg)
+	}
+	if strings.Contains(low, "refresh_token_reused") {
+		return infraerrors.Conflict(refreshReasonRTReused, msg)
+	}
+	if strings.Contains(low, "no refresh token available") {
+		return infraerrors.BadRequest(refreshReasonNoRefreshToken, msg)
+	}
+	if strings.Contains(low, "missing_project_id") {
+		return infraerrors.BadRequest(refreshReasonMissingProjectID, msg)
+	}
+	if strings.Contains(low, "invalid_client") {
+		return infraerrors.Conflict(refreshReasonInvalidClient, msg)
+	}
+	if strings.Contains(low, "access_denied") ||
+		strings.Contains(low, "unauthorized_client") {
+		return infraerrors.Forbidden(refreshReasonAccessDenied, msg)
+	}
+
+	// 2) 网络/上游不可用：unexpected EOF / connection refused / timeout / 502/503/504 → 502 + OAUTH_UPSTREAM_UNAVAILABLE
+	if strings.Contains(low, "unexpected eof") ||
+		strings.Contains(low, "connection refused") ||
+		strings.Contains(low, "no such host") ||
+		strings.Contains(low, "timeout") ||
+		strings.Contains(low, "deadline exceeded") ||
+		strings.Contains(low, "i/o timeout") ||
+		strings.Contains(low, "tls handshake") ||
+		strings.Contains(low, "broken pipe") {
+		return infraerrors.New(http.StatusBadGateway, refreshReasonUpstreamUnavail, msg)
+	}
+
+	// 3) 原有的 OPENAI_OAUTH_* reason 直接透传（service 层已分类）
+	switch originalReason {
+	case "OPENAI_OAUTH_PROXY_REQUIRED":
+		// 缺代理，可恢复 → 502
+		return infraerrors.New(http.StatusBadGateway, originalReason, msg)
+	case "OPENAI_OAUTH_REQUEST_FAILED",
+		"OPENAI_OAUTH_TOKEN_EXCHANGE_FAILED",
+		"OPENAI_OAUTH_TOKEN_REFRESH_FAILED",
+		"OPENAI_OAUTH_CLIENT_INIT_FAILED":
+		return infraerrors.New(http.StatusBadGateway, originalReason, msg)
+	}
+
+	// 4) 兜底
+	if appErr != nil && appErr.Code >= 400 && appErr.Code < 500 {
+		// 上游 4xx 但没匹配到已知关键字 → 仍然算上游拒绝（用户层一般得重新授权）
+		return infraerrors.New(int(appErr.Code), refreshReasonUpstreamRejected, msg)
+	}
+	return infraerrors.New(http.StatusBadGateway, refreshReasonUnknown, msg)
+}
+
+// CRS sync reason 码，前端 i18n namespace = admin.accounts.crs.errors
+const (
+	crsReasonInvalidBaseURL     = "CRS_INVALID_BASE_URL"
+	crsReasonMissingCredentials = "CRS_MISSING_CREDENTIALS"
+	crsReasonAuthFailed         = "CRS_AUTH_FAILED"
+	crsReasonUpstreamUnavail    = "CRS_UPSTREAM_UNAVAILABLE"
+	crsReasonExportFailed       = "CRS_EXPORT_FAILED"
+	crsReasonUnknown            = "CRS_SYNC_FAILED"
+)
+
+// classifyCRSError 把 CRS 同步/预览过程中产生的错误翻译成带正确 HTTP code + reason 的 ApplicationError，
+// 让 admin UI 能准确告诉用户是"用户名密码错"还是"CRS 服务连不上"还是"配置写错了"。
+//
+// CRSSyncService 产出的是 plain fmt.Errorf / errors.New，前缀决定语义：
+//   - "invalid base_url" / "config is not available" → 400
+//   - "username and password are required" → 400
+//   - "crs login failed: status=4xx" / "crs login failed: <message>" → 401
+//   - 网络 / 5xx / 创建 client 失败 → 502
+//   - 其他兜底 → 500
+func classifyCRSError(err error) *infraerrors.ApplicationError {
+	if err == nil {
+		return nil
+	}
+	msg := truncateErrorMessage(err.Error())
+	low := strings.ToLower(err.Error())
+
+	switch {
+	case strings.Contains(low, "invalid base_url"),
+		strings.Contains(low, "config is not available"):
+		return infraerrors.BadRequest(crsReasonInvalidBaseURL, msg)
+	case strings.Contains(low, "username and password are required"):
+		return infraerrors.BadRequest(crsReasonMissingCredentials, msg)
+	case strings.Contains(low, "crs login failed"):
+		return infraerrors.Unauthorized(crsReasonAuthFailed, msg)
+	case strings.Contains(low, "create http client failed"),
+		strings.Contains(low, "unexpected eof"),
+		strings.Contains(low, "connection refused"),
+		strings.Contains(low, "no such host"),
+		strings.Contains(low, "timeout"),
+		strings.Contains(low, "deadline exceeded"),
+		strings.Contains(low, "tls handshake"):
+		return infraerrors.New(http.StatusBadGateway, crsReasonUpstreamUnavail, msg)
+	case strings.Contains(low, "export") || strings.Contains(low, "parse"):
+		return infraerrors.New(http.StatusBadGateway, crsReasonExportFailed, msg)
+	default:
+		return infraerrors.New(http.StatusBadGateway, crsReasonUnknown, msg)
+	}
 }
 
 func (h *AccountHandler) buildAccountResponseWithRuntime(ctx context.Context, account *service.Account) AccountWithConcurrency {
@@ -746,7 +996,7 @@ func (h *AccountHandler) Test(c *gin.Context) {
 		// 测试失败：持久化错误状态，前端 reload 时可以看到。
 		// 使用 Background 上下文，避免 SSE 流关闭导致写库失败。
 		bgCtx := context.Background()
-		if setErr := h.adminService.SetAccountError(bgCtx, accountID, truncateErrorMessage(err.Error())); setErr != nil {
+		if setErr := h.adminService.SetAccountError(bgCtx, accountID, extractRefreshErrorMessage(err)); setErr != nil {
 			log.Printf("[WARN] failed to persist test error for account %d: %v", accountID, setErr)
 		}
 		return
@@ -812,8 +1062,7 @@ func (h *AccountHandler) SyncFromCRS(c *gin.Context) {
 		SelectedAccountIDs: req.SelectedAccountIDs,
 	})
 	if err != nil {
-		// Provide detailed error message for CRS sync failures
-		response.InternalError(c, "CRS sync failed: "+err.Error())
+		response.ErrorFrom(c, classifyCRSError(err))
 		return
 	}
 
@@ -835,7 +1084,7 @@ func (h *AccountHandler) PreviewFromCRS(c *gin.Context) {
 		Password: req.Password,
 	})
 	if err != nil {
-		response.InternalError(c, "CRS preview failed: "+err.Error())
+		response.ErrorFrom(c, classifyCRSError(err))
 		return
 	}
 
@@ -982,11 +1231,12 @@ func (h *AccountHandler) Refresh(c *gin.Context) {
 
 	updatedAccount, warning, err := h.refreshSingleAccount(c.Request.Context(), account)
 	if err != nil {
-		// 持久化错误状态，确保 UI reload 时能看到刷新失败而不是“无变化”。
-		if setErr := h.adminService.SetAccountError(c.Request.Context(), accountID, truncateErrorMessage(err.Error())); setErr != nil {
+		classified := classifyRefreshError(err)
+		// 持久化错误状态，确保 UI reload 时能看到刷新失败而不是"无变化"。
+		if setErr := h.adminService.SetAccountError(c.Request.Context(), accountID, extractRefreshErrorMessage(err)); setErr != nil {
 			log.Printf("[WARN] failed to persist refresh error for account %d: %v", accountID, setErr)
 		}
-		response.ErrorFrom(c, err)
+		response.ErrorFrom(c, classified)
 		return
 	}
 
@@ -1209,12 +1459,14 @@ func (h *AccountHandler) BatchRefresh(c *gin.Context) {
 			mu.Lock()
 			if err != nil {
 				failedCount++
+				classified := classifyRefreshError(err)
 				errors = append(errors, gin.H{
 					"account_id": acc.ID,
-					"error":      err.Error(),
+					"error":      classified.Message,
+					"reason":     classified.Reason,
 				})
 				// 刷新失败时持久化错误状态，让前端在 reload 时观察到。
-				if setErr := h.adminService.SetAccountError(gctx, acc.ID, truncateErrorMessage(err.Error())); setErr != nil {
+				if setErr := h.adminService.SetAccountError(gctx, acc.ID, extractRefreshErrorMessage(err)); setErr != nil {
 					log.Printf("[WARN] failed to persist refresh error for account %d: %v", acc.ID, setErr)
 				}
 			} else {
@@ -2311,4 +2563,346 @@ func sanitizeExtraBaseRPM(extra map[string]any) {
 		v = 10000
 	}
 	extra["base_rpm"] = v
+}
+
+// BatchTestAccountsRequest 批量测试账号请求
+// 不再接收模型列表——后端为每个账号独立从上游拉模型并自动挑选合适的模型。
+type BatchTestAccountsRequest struct {
+	AccountIDs  []int64 `json:"account_ids" binding:"required,min=1"`
+	Concurrency int     `json:"concurrency"`
+}
+
+// BatchTestAccountsProgress SSE 进度事件
+type BatchTestAccountsProgress struct {
+	Type        string `json:"type"` // "result" | "done"
+	AccountID   int64  `json:"account_id,omitempty"`
+	Model       string `json:"model,omitempty"`
+	ModelSource string `json:"model_source,omitempty"` // "upstream" / "fallback"，告诉前端模型是 live 拉的还是本地兜底
+	Success     bool   `json:"success,omitempty"`
+	// Outcome 区分三态，比 Success 布尔更细：
+	//   - "success"     测试调通
+	//   - "failed"      明确失败（鉴权/配置错，账号凭证被证伪，应暴露/可禁用）
+	//   - "unavailable" 暂不可用（上游池子/网关临时问题，账号未被证伪，不应误判禁用）
+	Outcome  string `json:"outcome,omitempty"`
+	Error    string `json:"error,omitempty"`
+	Current  int    `json:"current,omitempty"`
+	Total    int    `json:"total,omitempty"`
+	Attempts int    `json:"attempts,omitempty"`  // 实际尝试次数
+	FellBack string `json:"fell_back,omitempty"` // 最终成功使用的回落模式（compact / 空）
+}
+
+// batchTestOutcome 三态结果。
+const (
+	batchTestOutcomeSuccess     = "success"
+	batchTestOutcomeFailed      = "failed"
+	batchTestOutcomeUnavailable = "unavailable"
+)
+
+// classifyBatchTestOutcome 把 runTestWithRetry 的最终错误归成三态。
+//
+//   - testErr == nil                                → success
+//   - 候选模型不可用（model_not_found/无效模型 ID/Legacy）→ unavailable（模型下线，不是账号坏）
+//   - 上游池子/网关临时不可用（没号/502/temporarily）   → unavailable（账号未被证伪）
+//   - 明确鉴权/配置错（!isRetryableTestError）          → failed（账号凭证被证伪，应暴露）
+//   - 其余（重试耗尽的瞬时错误，如反复 EOF/超时）         → unavailable（同样未证伪账号）
+//
+// 设计意图：只有真正能归咎到"这个账号配置/凭证"的错误才标 failed；其它一律 unavailable，
+// 避免把"中转临时没号 / 网关 502 / 老模型下线（is not a valid model ID 等）"误报成账号失败、
+// 进而被一键禁用。注意 model-unavailable / pool-unavailable 必须在 isRetryableTestError
+// 之前判断——因为 "is not a valid model ID" 带 invalid_request_error 会被 isRetryableTestError
+// 当成不可重试，若不先拦下会被错判成 failed。
+func classifyBatchTestOutcome(testErr error) string {
+	if testErr == nil {
+		return batchTestOutcomeSuccess
+	}
+	// 模型本身不可用（候选全换完仍是这类）：上游下线/无渠道，不是账号凭证问题。
+	if service.IsModelUnavailableTestError(testErr) {
+		return batchTestOutcomeUnavailable
+	}
+	// 上游池子/网关临时不可用：没号、502/503/504、service temporarily unavailable 等。
+	if service.IsUpstreamPoolUnavailableTestError(testErr) {
+		return batchTestOutcomeUnavailable
+	}
+	// 明确的鉴权/配置错误：账号凭证/配置确实有问题，判失败。
+	if !isRetryableTestError(testErr) {
+		return batchTestOutcomeFailed
+	}
+	// 其余可重试错误走到这里说明重试/换模型都没救活：反复网络抖动等——未证伪账号本身。
+	return batchTestOutcomeUnavailable
+}
+
+// isRetryableTestError 判断测试错误是否值得重试。
+// - 网络层错误 / 5xx / 流式中断 → 可重试
+// - 客户端错误 / 模型不支持 / 鉴权失败 → 不重试
+func isRetryableTestError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+
+	// 明确不重试的错误模式
+	nonRetryable := []string{
+		"invalid_request_error",     // 上游说请求参数不对（比如模型不支持）
+		"unauthorized",              // 401
+		"forbidden",                 // 403
+		"invalid_api_key",           // API key 不对
+		"invalid refresh token",     // refresh token 失效
+		"account not found",         // 账号不存在
+		"no access token available", // OAuth 账号没 token
+		"no api key available",      // apikey 账号没 key
+		"missing_project_id",        // Antigravity 配置错
+		"invalid base url",          // base_url 配置错
+	}
+	for _, needle := range nonRetryable {
+		if strings.Contains(msg, needle) {
+			return false
+		}
+	}
+
+	// 默认可重试：网络错误、5xx、超时、流式中断等
+	return true
+}
+
+// runTestWithRetry 带重试、模型切换和回落的测试执行。
+//
+// candidates 是按"测试优先级"排序的模型列表（最新模型在前，老/legacy 在后，见
+// service.pickTestableModelCandidates）。逻辑：
+//   - 依次尝试每个候选模型；
+//   - 单个模型遇到"瞬时错误"（网络/5xx/流式中断）时，在该模型上做指数退避重试；
+//   - 遇到"模型不可用"错误（model_not_found / No available channel / Bedrock Legacy / 非法模型 ID）时，
+//     不在同一模型上空耗重试，直接切换到下一个候选模型；
+//   - OpenAI 账号在 default 模式跑完仍失败时，对当前模型再试一次 compact 模式作为回落。
+//
+// 返回：最终错误（nil 表示成功）、实际尝试次数、回落到的模式（默认模式时为空）、最终使用的模型。
+func (h *AccountHandler) runTestWithRetry(account *service.Account, accountID int64, candidates []string) (error, int, string, string) {
+	const maxAttemptsPerModel = 3
+
+	if len(candidates) == 0 {
+		return fmt.Errorf("no testable model resolved for this account"), 0, "", ""
+	}
+
+	doOnce := func(model, mode string) error {
+		dummyWriter := httptest.NewRecorder()
+		dummyReq := httptest.NewRequest("POST", "/dummy", nil)
+		testCtx, _ := gin.CreateTestContext(dummyWriter)
+		testCtx.Request = dummyReq
+		return h.accountTestService.TestAccountConnection(testCtx, accountID, model, "", mode)
+	}
+
+	totalAttempts := 0
+	var lastErr error
+	lastModel := candidates[0]
+
+	for _, model := range candidates {
+		lastModel = model
+		var modelErr error
+
+		// 阶段 1: 当前模型的 default 模式重试。
+		for attempt := 1; attempt <= maxAttemptsPerModel; attempt++ {
+			totalAttempts++
+			err := doOnce(model, "")
+			if err == nil {
+				return nil, totalAttempts, "", model
+			}
+			modelErr = err
+			lastErr = err
+
+			// 模型本身不可用 → 不在同一模型上重试，直接换下一个候选。
+			if service.IsModelUnavailableTestError(err) {
+				break
+			}
+			// 其它不可重试错误（鉴权失败等）→ 整体放弃，换模型也没用。
+			if !isRetryableTestError(err) {
+				return lastErr, totalAttempts, "", model
+			}
+			if attempt < maxAttemptsPerModel {
+				// 指数退避: 500ms, 1s, 2s
+				time.Sleep(time.Duration(1<<(attempt-1)) * 500 * time.Millisecond)
+			}
+		}
+
+		// 阶段 2: OpenAI 账号且当前模型 default 失败 → 尝试 compact 模式回落（同一模型）。
+		// 仅当失败原因不是"模型不可用"时才值得试 compact（模型不存在时 compact 也没意义）。
+		if account != nil && account.IsOpenAI() && !service.IsModelUnavailableTestError(modelErr) && isRetryableTestError(modelErr) {
+			totalAttempts++
+			compactErr := doOnce(model, service.AccountTestModeCompact)
+			if compactErr == nil {
+				return nil, totalAttempts, "compact", model
+			}
+			lastErr = compactErr
+		}
+
+		// 当前模型不可用 → 继续下一个候选；否则（已穷尽重试/compact）也继续兜底尝试下一个候选。
+	}
+
+	return lastErr, totalAttempts, "", lastModel
+}
+
+// maxTestModelCandidates batch-test 每个账号最多尝试的候选模型数。
+// 取 3：覆盖"上游列表第一个是下线老模型"的情况（换 1-2 个新模型即可命中），
+// 又不至于在一个账号上空耗太多上游请求。
+const maxTestModelCandidates = 3
+
+// pickTestModelCandidatesForAccount 为账号挑选一组按"测试优先级"排序的候选模型。
+//
+// 策略（见 service.pickTestableModelCandidates）：
+//   - 最新模型在前（gpt-5.5 > gpt-5.4 > gpt-5.2；claude opus/sonnet 4.7 > 4.6 > 4.5），
+//     明确老旧 / 多数上游已下线的模型（claude-2.x、claude-3-5-*-2024*、gpt-4*、gemini-1.x 等）降权排队尾。
+//   - batch-test 依次尝试这些候选，遇到 model_not_found / No available channel / Legacy 就换下一个，
+//     从根本上避免"测试挑到一个上游已经下线/无渠道的老模型"导致整片误判失败。
+//
+// 上游列表为空时回退到平台默认测试模型。
+func pickTestModelCandidatesForAccount(account *service.Account, upstreamModels []string) []string {
+	if account == nil {
+		return nil
+	}
+	if candidates := service.PickTestableModelCandidates(upstreamModels, maxTestModelCandidates); len(candidates) > 0 {
+		return candidates
+	}
+	// 兜底：用各平台的默认测试模型
+	if account.IsOpenAI() {
+		return []string{openai.DefaultTestModel}
+	}
+	if account.IsGemini() {
+		return []string{geminicli.DefaultTestModel}
+	}
+	return []string{claude.DefaultTestModel}
+}
+
+// BatchTestAccounts 批量测试账号
+// POST /api/v1/admin/accounts/batch-test
+//
+// 设计：
+//   - 前端只传 account_ids（不传 model_ids）
+//   - 后端为每个账号独立做：拉上游模型列表 → 挑一个合适的模型 → 执行测试
+//   - 上游模型列表拉不到 → 该账号直接 failed，错误信息明确说"无法获取上游模型"
+//   - 测试过程内部错误不会触发 gateway failover（这是后台运维操作，不是网关流量）
+func (h *AccountHandler) BatchTestAccounts(c *gin.Context) {
+	var req BatchTestAccountsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	// 默认并发 5
+	if req.Concurrency <= 0 {
+		req.Concurrency = 5
+	}
+	if req.Concurrency > 20 {
+		req.Concurrency = 20
+	}
+
+	// 设置 SSE headers
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+
+	ctx := c.Request.Context()
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		response.InternalError(c, "Streaming not supported")
+		return
+	}
+
+	total := len(req.AccountIDs)
+	current := 0
+	var mu sync.Mutex
+
+	// 写 SSE 事件
+	emit := func(p BatchTestAccountsProgress) {
+		data, _ := json.Marshal(p)
+		fmt.Fprintf(c.Writer, "data: %s\n\n", data)
+		flusher.Flush()
+	}
+
+	// 并发执行测试
+	sem := make(chan struct{}, req.Concurrency)
+	var wg sync.WaitGroup
+
+	for _, accountID := range req.AccountIDs {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		wg.Add(1)
+		go func(accID int64) {
+			defer wg.Done()
+
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			// 1) 获取账号
+			account, err := h.adminService.GetAccount(context.Background(), accID)
+
+			report := func(model, modelSource, outcome, errMsg string, attempts int, fellBack string) {
+				mu.Lock()
+				current++
+				progress := BatchTestAccountsProgress{
+					Type:        "result",
+					AccountID:   accID,
+					Model:       model,
+					ModelSource: modelSource,
+					Success:     outcome == batchTestOutcomeSuccess,
+					Outcome:     outcome,
+					Error:       errMsg,
+					Current:     current,
+					Total:       total,
+					Attempts:    attempts,
+					FellBack:    fellBack,
+				}
+				mu.Unlock()
+				emit(progress)
+			}
+
+			if err != nil || account == nil {
+				report("", "", batchTestOutcomeFailed, "Account not found", 0, "")
+				return
+			}
+
+			// 2) 拉模型列表：OAuth 账号在 live 不可用时自动回退到平台内置 known-good 列表，
+			//    避免 OpenAI ChatGPT-OAuth / Claude OAuth (scope 无 models.read) 等账号被一刀切判失败。
+			//    走到 fetchErr != nil 的，已是不予回退的错误（鉴权/配置/不支持），多半是真配错；
+			//    但若上游列表请求本身是临时 5xx/网关问题没能回退，则标 unavailable 而非 failed。
+			upstreamCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			testableModels, modelSource, fetchErr := h.accountTestService.FetchTestableModelsForAccount(upstreamCtx, account)
+			cancel()
+			if fetchErr != nil {
+				fetchOutcome := batchTestOutcomeFailed
+				if service.IsUpstreamPoolUnavailableTestError(fetchErr) {
+					fetchOutcome = batchTestOutcomeUnavailable
+				}
+				report("", "", fetchOutcome, "Failed to fetch testable models: "+fetchErr.Error(), 0, "")
+				return
+			}
+			if len(testableModels) == 0 {
+				report("", "", batchTestOutcomeFailed, "No testable model resolved for this account", 0, "")
+				return
+			}
+
+			// 3) 挑选一组按测试优先级排序的候选模型（最新在前，老/legacy 排队尾）。
+			testCandidates := pickTestModelCandidatesForAccount(account, testableModels)
+			if len(testCandidates) == 0 {
+				report("", string(modelSource), batchTestOutcomeFailed, "No suitable test model found for this account", 0, "")
+				return
+			}
+
+			// 4) 执行测试（候选模型逐个尝试 + 每模型重试 + OpenAI compact 回落）。
+			//    遇到 model_not_found / No available channel / Bedrock Legacy 自动换下一个候选模型。
+			testErr, attempts, fellBack, usedModel := h.runTestWithRetry(account, accID, testCandidates)
+
+			errMsg := ""
+			if testErr != nil {
+				errMsg = testErr.Error()
+			}
+			report(usedModel, string(modelSource), classifyBatchTestOutcome(testErr), errMsg, attempts, fellBack)
+		}(accountID)
+	}
+
+	wg.Wait()
+
+	// 发送完成事件
+	emit(BatchTestAccountsProgress{Type: "done", Current: total, Total: total})
 }

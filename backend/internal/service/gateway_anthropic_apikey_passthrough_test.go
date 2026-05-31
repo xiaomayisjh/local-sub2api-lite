@@ -931,8 +931,14 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardDirect_UpstreamRequest
 	result, err := svc.forwardAnthropicAPIKeyPassthrough(context.Background(), c, account, []byte(`{"model":"x"}`), "x", "x", false, time.Now())
 	require.Nil(t, result)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "upstream request failed")
-	require.Equal(t, http.StatusBadGateway, rec.Code)
+	// Transport-level 错误现在包成 UpstreamFailoverError 让 handler 层走 failover_loop 换号，
+	// 不再由 Forward 直接写 502 给客户端（那样会污染 c.Writer，阻断 failover）。
+	var failoverErr *UpstreamFailoverError
+	require.True(t, errors.As(err, &failoverErr), "transport error should be wrapped as UpstreamFailoverError")
+	require.Equal(t, 0, failoverErr.StatusCode, "transport error has no HTTP status")
+	require.NotEmpty(t, failoverErr.ResponseBody, "fallback response body should be set for handler exhaustion path")
+	// c.Writer 未被污染：handler 层据此判断"可以 failover"。
+	require.Equal(t, http.StatusOK, rec.Code, "Forward must NOT write to c.Writer on transport error")
 }
 
 func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardDirect_EmptyResponseBody(t *testing.T) {

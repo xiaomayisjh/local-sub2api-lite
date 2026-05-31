@@ -1446,6 +1446,11 @@ var (
 				Unique:  false,
 				Columns: []*schema.Column{UsageLogsColumns[39], UsageLogsColumns[36]},
 			},
+			{
+				Name:    "usagelog_request_id_api_key_id",
+				Unique:  true,
+				Columns: []*schema.Column{UsageLogsColumns[1], UsageLogsColumns[37]},
+			},
 		},
 	}
 	// UsersColumns holds the columns for the "users" table.

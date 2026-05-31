@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -194,7 +195,7 @@ func (h *DashboardHandler) buildSnapshotV2Response(
 			filters.BillingType,
 		)
 		if err != nil {
-			return nil, errors.New("failed to get usage trend")
+			return nil, fmt.Errorf("failed to get usage trend: %w", err)
 		}
 		resp.Trend = trend
 	}

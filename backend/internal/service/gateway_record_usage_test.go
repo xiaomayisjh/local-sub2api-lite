@@ -490,3 +490,39 @@ func TestGatewayServiceRecordUsage_ReasoningEffortNil(t *testing.T) {
 	require.NotNil(t, usageRepo.lastLog)
 	require.Nil(t, usageRepo.lastLog.ReasoningEffort)
 }
+
+// 本地/单机模式（run_mode: local）下，SaaS 计费/额度被关闭：
+// 必须只写 usage_log、完全不调用 applyUsageBilling。
+// 回归用例锁定历史缺陷：此前 LOCAL 模式错误地走了 SaaS 计费路径，
+// 而该路径依赖 PostgreSQL 专用 SQL 与 usage_billing_dedup 表，在 SQLite 下
+// 必然报错并提前返回，导致 usage_log 永远写不进去（用量统计一直为 0）。
+func TestGatewayServiceRecordUsage_LocalModeWritesLogWithoutBilling(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{}
+	// billingRepo 一旦被调用就返回错误：若回归则 usageRepo.calls 会变成 0。
+	billingRepo := &openAIRecordUsageBillingRepoStub{err: context.DeadlineExceeded}
+	svc := newGatewayRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{})
+	svc.cfg.RunMode = config.RunModeLocal
+
+	err := svc.RecordUsage(context.Background(), &RecordUsageInput{
+		Result: &ForwardResult{
+			RequestID: "gateway_local_mode",
+			Usage: ClaudeUsage{
+				InputTokens:  10,
+				OutputTokens: 6,
+			},
+			Model:    "claude-sonnet-4",
+			Duration: time.Second,
+		},
+		APIKey:  &APIKey{ID: 505},
+		User:    &User{ID: 605},
+		Account: &Account{ID: 705},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 0, billingRepo.calls, "local mode must not invoke SaaS billing")
+	require.Equal(t, 1, usageRepo.calls, "local mode must still write the usage log")
+	require.NotNil(t, usageRepo.lastLog)
+	require.Equal(t, int64(605), usageRepo.lastLog.UserID)
+	require.Equal(t, 16, usageRepo.lastLog.TotalTokens())
+}
+

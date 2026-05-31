@@ -131,6 +131,22 @@
                       </span>
                       <span class="flex-1 text-left">{{ t('admin.tlsFingerprintProfiles.title') }}</span>
                     </button>
+                    <button
+                      class="account-tools-menu-item"
+                      @click="openBatchTest"
+                      :disabled="selIds.length === 0"
+                    >
+                      <span class="account-tools-menu-icon bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300">
+                        <Icon name="play" size="sm" />
+                      </span>
+                      <span class="flex-1 text-left">{{ t('admin.accounts.batchTest') }}</span>
+                      <span
+                        v-if="selIds.length"
+                        class="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
+                      >
+                        {{ selIds.length }}
+                      </span>
+                    </button>
 
                     <div class="my-2 border-t border-gray-100 dark:border-gray-700"></div>
                     <div class="px-2 py-2">
@@ -373,6 +389,16 @@
     </ConfirmDialog>
     <ErrorPassthroughRulesModal :show="showErrorPassthrough" @close="showErrorPassthrough = false" />
     <TLSFingerprintProfilesModal :show="showTLSFingerprintProfiles" @close="showTLSFingerprintProfiles = false" />
+    <BatchTestAccountsModal
+      :show="showBatchTest"
+      :account-ids="selIds"
+      :accounts="accounts"
+      :progress="batchTestProgress"
+      :running="batchTestRunning"
+      @close="showBatchTest = false"
+      @start="handleBatchTestStart"
+      @applied="reload"
+    />
   </AppLayout>
 </template>
 
@@ -411,6 +437,7 @@ import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
 import Icon from '@/components/icons/Icon.vue'
 import ErrorPassthroughRulesModal from '@/components/admin/ErrorPassthroughRulesModal.vue'
 import TLSFingerprintProfilesModal from '@/components/admin/TLSFingerprintProfilesModal.vue'
+import BatchTestAccountsModal from '@/components/admin/BatchTestAccountsModal.vue'
 import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { extractI18nErrorMessage } from '@/utils/apiError'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
@@ -490,6 +517,11 @@ const scheduleModelOptions = ref<SelectOption[]>([])
 const togglingSchedulable = ref<number | null>(null)
 const menu = reactive<{show:boolean, acc:Account|null, pos:{top:number, left:number}|null}>({ show: false, acc: null, pos: null })
 const exportingData = ref(false)
+
+// Batch test
+const showBatchTest = ref(false)
+const batchTestProgress = ref<{accountId: number, model: string, modelSource?: string, success: boolean, error?: string, attempts?: number, fellBack?: string}[]>([])
+const batchTestRunning = ref(false)
 
 // Account tools dropdown
 const showAccountToolsDropdown = ref(false)
@@ -995,6 +1027,68 @@ const openTLSFingerprintProfiles = () => {
   showTLSFingerprintProfiles.value = true
 }
 
+const openBatchTest = () => {
+  if (selIds.value.length === 0) return
+  closeAccountToolsDropdown()
+  batchTestProgress.value = []
+  showBatchTest.value = true
+}
+
+const handleBatchTestStart = async (concurrency: number) => {
+  batchTestRunning.value = true
+  batchTestProgress.value = []
+
+  try {
+    const response = await fetch('/api/v1/admin/accounts/batch-test', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('auth_token') ?? ''}`
+      },
+      body: JSON.stringify({
+        account_ids: selIds.value,
+        concurrency
+      })
+    })
+
+    if (!response.ok) throw new Error('Batch test request failed')
+
+    const reader = response.body?.getReader()
+    const decoder = new TextDecoder()
+
+    if (!reader) throw new Error('No response body')
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      const chunk = decoder.decode(value)
+      const lines = chunk.split('\n')
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = JSON.parse(line.slice(6))
+          if (data.type === 'result') {
+            batchTestProgress.value.push({
+              accountId: data.account_id,
+              model: data.model,
+              modelSource: data.model_source,
+              success: data.success,
+              error: data.error,
+              attempts: data.attempts,
+              fellBack: data.fell_back
+            })
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Batch test failed:', error)
+  } finally {
+    batchTestRunning.value = false
+  }
+}
+
 const syncPendingListChanges = async () => {
   hasPendingListSync.value = false
   await load()
@@ -1254,7 +1348,10 @@ const handleBulkRefreshToken = async () => {
   try {
     const result = await adminAPI.accounts.batchRefresh(selIds.value)
     if (result.failed > 0) {
-      appStore.showError(t('admin.accounts.bulkActions.partialSuccess', { success: result.success, failed: result.failed }))
+      const breakdown = summarizeRefreshFailures(result.errors)
+      const summaryLine = t('admin.accounts.bulkActions.partialSuccess', { success: result.success, failed: result.failed })
+      const message = breakdown ? `${summaryLine}\n${breakdown}` : summaryLine
+      appStore.showError(message)
     } else {
       appStore.showSuccess(t('admin.accounts.bulkActions.refreshTokenSuccess', { count: result.success }))
       clearSelection()
@@ -1262,8 +1359,49 @@ const handleBulkRefreshToken = async () => {
     reload()
   } catch (error) {
     console.error('Failed to bulk refresh token:', error)
-    appStore.showError(String(error))
+    appStore.showError(
+      extractI18nErrorMessage(error, t, 'admin.accounts.refresh.errors', String(error))
+    )
   }
+}
+
+// summarizeRefreshFailures 把 batch-refresh 返回的 per-account errors 按 reason 分桶，
+// 让用户一眼看出"哪些账号需要重新授权"vs"哪些是网络瞬时问题可以再试"。
+const summarizeRefreshFailures = (
+  errors?: Array<{ account_id: number; error: string; reason?: string }>
+): string => {
+  if (!errors || errors.length === 0) return ''
+  // 需要用户主动介入（重新授权）
+  const needReauth = new Set([
+    'REFRESH_TOKEN_REVOKED',
+    'REFRESH_TOKEN_REUSED',
+    'OAUTH_ACCESS_DENIED',
+    'OAUTH_NO_REFRESH_TOKEN',
+    'OAUTH_INVALID_CLIENT',
+    'OAUTH_MISSING_PROJECT_ID'
+  ])
+  // 临时故障，稍后重试就行
+  const transient = new Set([
+    'OAUTH_UPSTREAM_UNAVAILABLE',
+    'OPENAI_OAUTH_REQUEST_FAILED',
+    'OPENAI_OAUTH_PROXY_REQUIRED',
+    'OPENAI_OAUTH_TOKEN_EXCHANGE_FAILED',
+    'OPENAI_OAUTH_TOKEN_REFRESH_FAILED',
+    'OPENAI_OAUTH_CLIENT_INIT_FAILED'
+  ])
+  let reauthCount = 0
+  let transientCount = 0
+  let otherCount = 0
+  for (const e of errors) {
+    if (e.reason && needReauth.has(e.reason)) reauthCount++
+    else if (e.reason && transient.has(e.reason)) transientCount++
+    else otherCount++
+  }
+  const parts: string[] = []
+  if (reauthCount > 0) parts.push(t('admin.accounts.bulkActions.refreshFailureGroupReauth', { count: reauthCount }))
+  if (transientCount > 0) parts.push(t('admin.accounts.bulkActions.refreshFailureGroupTransient', { count: transientCount }))
+  if (otherCount > 0) parts.push(t('admin.accounts.bulkActions.refreshFailureGroupOther', { count: otherCount }))
+  return parts.join('；')
 }
 const updateSchedulableInList = (accountIds: number[], schedulable: boolean) => {
   if (accountIds.length === 0) return
@@ -1617,7 +1755,7 @@ const handleRefresh = async (a: Account) => {
       extractI18nErrorMessage(
         error,
         t,
-        'admin.accounts.oauth.openai.errors',
+        'admin.accounts.refresh.errors',
         t('admin.accounts.oauth.openai.failedToValidateRT')
       )
     )

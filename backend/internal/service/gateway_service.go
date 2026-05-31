@@ -538,6 +538,69 @@ func (s *GatewayService) TempUnscheduleRetryableError(ctx context.Context, accou
 	}
 }
 
+// buildTransportFailoverBody 构造一个 Anthropic 风格的错误响应体，
+// 让 ResponseBody 既能作为"客户端可见的兜底响应"（failover 全失败时由 handler 写给客户端），
+// 也能被错误透传规则按字符串匹配。
+func buildTransportFailoverBody(safeErr string) []byte {
+	if safeErr == "" {
+		safeErr = "upstream connection error"
+	}
+	body, _ := json.Marshal(map[string]any{
+		"type": "error",
+		"error": map[string]any{
+			"type":    "upstream_error",
+			"message": "Upstream connection failed: " + safeErr,
+		},
+	})
+	return body
+}
+
+// buildTransportFailoverBodyOpenAI 构造 OpenAI 风格的错误响应体（无 "type":"error" 外层）。
+func buildTransportFailoverBodyOpenAI(safeErr string) []byte {
+	if safeErr == "" {
+		safeErr = "upstream connection error"
+	}
+	body, _ := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"type":    "upstream_error",
+			"message": "Upstream connection failed: " + safeErr,
+		},
+	})
+	return body
+}
+
+// wrapTransportErrorAsFailover 把 transport-level 错误（EOF / connection refused /
+// reset / timeout 等）包成 UpstreamFailoverError，让 handler 层的 failover_loop 能换号重试。
+//
+// 历史行为：transport 错误会直接给客户端写 502 + 返回 raw error，导致：
+//   - 第三方中转/不稳定网络下根本没有 failover 机会
+//   - 多账号资源池退化为"一次失败即返回"
+//
+// 现在：StatusCode=0 表示"未拿到 HTTP 响应"；ResponseBody 装净化后的错误描述，
+// failover_loop 在 switches 用尽时会把它写给客户端，作为兜底响应。
+func wrapTransportErrorAsFailover(err error) *UpstreamFailoverError {
+	safeErr := sanitizeStreamError(err)
+	if safeErr == "" {
+		safeErr = "upstream connection error"
+	}
+	return &UpstreamFailoverError{
+		StatusCode:   0,
+		ResponseBody: buildTransportFailoverBody(safeErr),
+	}
+}
+
+// wrapTransportErrorAsFailoverOpenAI 同 wrapTransportErrorAsFailover，但使用 OpenAI 错误格式。
+func wrapTransportErrorAsFailoverOpenAI(err error) *UpstreamFailoverError {
+	safeErr := sanitizeStreamError(err)
+	if safeErr == "" {
+		safeErr = "upstream connection error"
+	}
+	return &UpstreamFailoverError{
+		StatusCode:   0,
+		ResponseBody: buildTransportFailoverBodyOpenAI(safeErr),
+	}
+}
+
 // GatewayService handles API gateway operations
 type GatewayService struct {
 	accountRepo           AccountRepository
@@ -4543,7 +4606,10 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			if resp != nil && resp.Body != nil {
 				_ = resp.Body.Close()
 			}
-			// Ensure the client receives an error response (handlers assume Forward writes on non-failover errors).
+			// Transport-level 错误（EOF / connection refused / reset / timeout 等）：
+			// 不直接 c.JSON(502)，避免污染 c.Writer 阻断 failover_loop 换号。
+			// 改为返回 UpstreamFailoverError(StatusCode=0)，由 handler 层走 failover 链：
+			// 切到下一个候选账号继续重试；全部耗尽时再由 handleFailoverExhausted 写错误响应。
 			safeErr := sanitizeUpstreamErrorMessage(err.Error())
 			setOpsUpstreamError(c, 0, safeErr, "")
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -4552,17 +4618,10 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				AccountName:        account.Name,
 				UpstreamStatusCode: 0,
 				UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
-				Kind:               "request_error",
+				Kind:               "transport_error_failover",
 				Message:            safeErr,
 			})
-			c.JSON(http.StatusBadGateway, gin.H{
-				"type": "error",
-				"error": gin.H{
-					"type":    "upstream_error",
-					"message": "Upstream request failed",
-				},
-			})
-			return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+			return nil, wrapTransportErrorAsFailover(err)
 		}
 
 		// 优先检测thinking block签名错误（400）并重试一次
@@ -5030,6 +5089,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			if resp != nil && resp.Body != nil {
 				_ = resp.Body.Close()
 			}
+			// 同 executeUpstream 的注释：transport 错误改返回 failover error。
 			safeErr := sanitizeUpstreamErrorMessage(err.Error())
 			setOpsUpstreamError(c, 0, safeErr, "")
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -5039,17 +5099,10 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 				UpstreamStatusCode: 0,
 				UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
 				Passthrough:        true,
-				Kind:               "request_error",
+				Kind:               "transport_error_failover",
 				Message:            safeErr,
 			})
-			c.JSON(http.StatusBadGateway, gin.H{
-				"type": "error",
-				"error": gin.H{
-					"type":    "upstream_error",
-					"message": "Upstream request failed",
-				},
-			})
-			return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+			return nil, wrapTransportErrorAsFailover(err)
 		}
 
 		// 透传分支禁止 400 请求体降级重试（该重试会改写请求体）
@@ -5806,6 +5859,7 @@ func (s *GatewayService) executeBedrockUpstream(
 			if resp != nil && resp.Body != nil {
 				_ = resp.Body.Close()
 			}
+			// 同 executeUpstream 的注释：transport 错误改返回 failover error。
 			safeErr := sanitizeUpstreamErrorMessage(err.Error())
 			setOpsUpstreamError(c, 0, safeErr, "")
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -5814,17 +5868,10 @@ func (s *GatewayService) executeBedrockUpstream(
 				AccountName:        account.Name,
 				UpstreamStatusCode: 0,
 				UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
-				Kind:               "request_error",
+				Kind:               "transport_error_failover",
 				Message:            safeErr,
 			})
-			c.JSON(http.StatusBadGateway, gin.H{
-				"type": "error",
-				"error": gin.H{
-					"type":    "upstream_error",
-					"message": "Upstream request failed",
-				},
-			})
-			return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+			return nil, wrapTransportErrorAsFailover(err)
 		}
 
 		if resp.StatusCode >= 400 && resp.StatusCode != 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
@@ -8512,7 +8559,12 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		)
 	}
 
-	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
+	// SIMPLE 与 LOCAL（桌面单用户）模式均关闭 SaaS 计费/额度。
+	// 这两种模式只记录 usage_log（用于用量统计/控制台展示），不调用
+	// applyUsageBilling —— 后者依赖 PostgreSQL 专用 SQL（jsonb/INTERVAL/NOW()
+	// 以及 usage_billing_dedup 表），在 SQLite 下会直接报错并触发提前返回，
+	// 导致 usage_log 永远写不进去（统计一直为 0）。
+	if s.cfg.IsSimpleLike() {
 		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
 		logger.LegacyPrintf("service.gateway", "[SIMPLE MODE] Usage recorded (not billed): user=%d, tokens=%d", usageLog.UserID, usageLog.TotalTokens())
 		s.deferredService.ScheduleLastUsedUpdate(account.ID)

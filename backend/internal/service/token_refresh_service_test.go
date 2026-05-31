@@ -533,6 +533,9 @@ func TestIsNonRetryableRefreshError(t *testing.T) {
 		{name: "invalid_grant", err: errors.New("invalid_grant"), expected: true},
 		{name: "invalid_client", err: errors.New("invalid_client"), expected: true},
 		{name: "refresh_token_reused", err: errors.New(`OPENAI_OAUTH_TOKEN_REFRESH_FAILED: token refresh failed: status 401, body: {"error":{"code":"refresh_token_reused"}}`), expected: true},
+		// 回归：OpenAI 返回 invalid_refresh_token 时必须直接判为不可重试，
+		// 否则会按"可重试"路径每 10 分钟刷一次、刷不停，浪费上游配额且制造日志噪音。
+		{name: "openai_invalid_refresh_token", err: errors.New(`OPENAI_OAUTH_TOKEN_REFRESH_FAILED: token refresh failed: status 400, body: {"error":{"code":"invalid_refresh_token","message":"Invalid refresh token."}}`), expected: true},
 		{name: "unauthorized_client", err: errors.New("unauthorized_client"), expected: true},
 		{name: "access_denied", err: errors.New("access_denied"), expected: true},
 		{name: "no_refresh_token", err: errors.New("no refresh token available"), expected: true},

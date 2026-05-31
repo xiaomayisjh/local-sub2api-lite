@@ -207,5 +207,8 @@ func (UsageLog) Indexes() []ent.Index {
 		index.Fields("api_key_id", "created_at"),
 		// 分组维度时间范围查询（线上由 SQL 迁移创建 group_id IS NOT NULL 的部分索引）
 		index.Fields("group_id", "created_at"),
+		// UNIQUE 约束：防止同一 request_id + api_key_id 重复写入
+		// 用于 usage_log_repo.go 的 ON CONFLICT (request_id, api_key_id) DO NOTHING
+		index.Fields("request_id", "api_key_id").Unique(),
 	}
 }

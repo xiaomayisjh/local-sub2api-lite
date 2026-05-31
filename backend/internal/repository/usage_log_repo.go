@@ -131,15 +131,21 @@ func safeDateFormat(granularity string) string {
 
 func usageLogDateGroupExpr(column, granularity string) string {
 	if sqldialect.UsesSQLite() {
+		// SQLite 下 ent 写入的 datetime 字段是 Go time.String() 默认格式
+		// （形如 "2026-05-31 09:02:57.463304 +0800 CST m=+474.119079101"）。
+		// strftime 无法解析末尾的 "+0800 CST m=+..." 部分，会返回 NULL，
+		// 导致 Scan 到 string 类型时报 "converting NULL to string is unsupported"。
+		// 用 substr 截前 19 个字符（"YYYY-MM-DD HH:MM:SS"）作为 strftime 的输入。
+		normalized := fmt.Sprintf("substr(%s, 1, 19)", column)
 		switch granularity {
 		case "hour":
-			return fmt.Sprintf("strftime('%%Y-%%m-%%d %%H:00', %s)", column)
+			return fmt.Sprintf("strftime('%%Y-%%m-%%d %%H:00', %s)", normalized)
 		case "week":
-			return fmt.Sprintf("strftime('%%Y-%%W', %s)", column)
+			return fmt.Sprintf("strftime('%%Y-%%W', %s)", normalized)
 		case "month":
-			return fmt.Sprintf("strftime('%%Y-%%m', %s)", column)
+			return fmt.Sprintf("strftime('%%Y-%%m', %s)", normalized)
 		default:
-			return fmt.Sprintf("strftime('%%Y-%%m-%%d', %s)", column)
+			return fmt.Sprintf("strftime('%%Y-%%m-%%d', %s)", normalized)
 		}
 	}
 	return fmt.Sprintf("TO_CHAR(%s, '%s')", column, safeDateFormat(granularity))
@@ -2073,7 +2079,7 @@ func (r *usageLogRepository) GetDailyStatsAggregated(ctx context.Context, userID
 	result = make([]map[string]any, 0)
 	for rows.Next() {
 		var (
-			date              string
+			date              sql.NullString
 			totalRequests     int64
 			totalInputTokens  int64
 			totalOutputTokens int64
@@ -2095,7 +2101,7 @@ func (r *usageLogRepository) GetDailyStatsAggregated(ctx context.Context, userID
 			return nil, err
 		}
 		result = append(result, map[string]any{
-			"date":                date,
+			"date":                date.String,
 			"total_requests":      totalRequests,
 			"total_input_tokens":  totalInputTokens,
 			"total_output_tokens": totalOutputTokens,
@@ -2430,8 +2436,12 @@ func (r *usageLogRepository) GetAPIKeyUsageTrend(ctx context.Context, startTime,
 	results = make([]APIKeyUsageTrendPoint, 0)
 	for rows.Next() {
 		var row APIKeyUsageTrendPoint
-		if err = rows.Scan(&row.Date, &row.APIKeyID, &row.KeyName, &row.Requests, &row.Tokens); err != nil {
+		var date sql.NullString
+		if err = rows.Scan(&date, &row.APIKeyID, &row.KeyName, &row.Requests, &row.Tokens); err != nil {
 			return nil, err
+		}
+		if date.Valid {
+			row.Date = date.String
 		}
 		results = append(results, row)
 	}
@@ -2488,8 +2498,12 @@ func (r *usageLogRepository) GetUserUsageTrend(ctx context.Context, startTime, e
 	results = make([]UserUsageTrendPoint, 0)
 	for rows.Next() {
 		var row UserUsageTrendPoint
-		if err = rows.Scan(&row.Date, &row.UserID, &row.Email, &row.Username, &row.Requests, &row.Tokens, &row.Cost, &row.ActualCost); err != nil {
+		var date sql.NullString
+		if err = rows.Scan(&date, &row.UserID, &row.Email, &row.Username, &row.Requests, &row.Tokens, &row.Cost, &row.ActualCost); err != nil {
 			return nil, err
+		}
+		if date.Valid {
+			row.Date = date.String
 		}
 		results = append(results, row)
 	}
@@ -4047,7 +4061,7 @@ func (r *usageLogRepository) GetAccountUsageStats(ctx context.Context, accountID
 
 	history := make([]AccountUsageHistory, 0)
 	for rows.Next() {
-		var date string
+		var date sql.NullString
 		var requests int64
 		var tokens int64
 		var cost float64
@@ -4056,9 +4070,10 @@ func (r *usageLogRepository) GetAccountUsageStats(ctx context.Context, accountID
 		if err = rows.Scan(&date, &requests, &tokens, &cost, &actualCost, &userCost); err != nil {
 			return nil, err
 		}
-		t, _ := time.Parse("2006-01-02", date)
+		dateStr := date.String
+		t, _ := time.Parse("2006-01-02", dateStr)
 		history = append(history, AccountUsageHistory{
-			Date:       date,
+			Date:       dateStr,
 			Label:      t.Format("01/02"),
 			Requests:   requests,
 			Tokens:     tokens,
@@ -4678,8 +4693,9 @@ func scanTrendRows(rows *sql.Rows) ([]TrendDataPoint, error) {
 	results := make([]TrendDataPoint, 0)
 	for rows.Next() {
 		var row TrendDataPoint
+		var date sql.NullString
 		if err := rows.Scan(
-			&row.Date,
+			&date,
 			&row.Requests,
 			&row.InputTokens,
 			&row.OutputTokens,
@@ -4690,6 +4706,10 @@ func scanTrendRows(rows *sql.Rows) ([]TrendDataPoint, error) {
 			&row.ActualCost,
 		); err != nil {
 			return nil, err
+		}
+		// 防御性：date 可能为 NULL（罕见，但 SQLite 在某些非标准时间格式下会返回 NULL）
+		if date.Valid {
+			row.Date = date.String
 		}
 		results = append(results, row)
 	}

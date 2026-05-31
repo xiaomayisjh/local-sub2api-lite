@@ -247,6 +247,7 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
 import type { PreviewFromCRSResult } from '@/api/admin/accounts'
+import { extractI18nErrorMessage } from '@/utils/apiError'
 
 interface Props {
   show: boolean
@@ -356,7 +357,9 @@ const handlePreview = async () => {
     selectedIds.value = new Set(res.new_accounts.map((a) => a.crs_account_id))
     currentStep.value = 'preview'
   } catch (error: any) {
-    appStore.showError(error?.message || t('admin.accounts.crsPreviewFailed'))
+    appStore.showError(
+      extractI18nErrorMessage(error, t, 'admin.accounts.crs.errors', t('admin.accounts.crsPreviewFailed'))
+    )
   } finally {
     previewing.value = false
   }
@@ -387,7 +390,9 @@ const handleSync = async () => {
     }
     emit('synced')
   } catch (error: any) {
-    appStore.showError(error?.message || t('admin.accounts.syncFailed'))
+    appStore.showError(
+      extractI18nErrorMessage(error, t, 'admin.accounts.crs.errors', t('admin.accounts.syncFailed'))
+    )
   } finally {
     syncing.value = false
   }
