@@ -109,6 +109,7 @@
         <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
           {{ t('payment.admin.maxRefundable') }}: {{ order?.order_type === 'balance' ? '$' : '¥' }}{{ maxRefundable.toFixed(2) }}
         </p>
+        <div v-if="form.amount <= 0" class="mt-2 text-sm text-red-600 dark:text-red-400">{{ t('payment.admin.enterRefundAmount', 'Enter a refund amount greater than 0') }}</div>
       </div>
 
       <!-- Reason -->
@@ -142,6 +143,7 @@
         <label for="force-refund" class="text-sm font-medium text-red-600 dark:text-red-400">
           {{ t('payment.admin.forceRefund') }}
         </label>
+        <div v-if="requireForce && !form.force" class="mt-1 text-sm text-red-600 dark:text-red-400">{{ t('payment.admin.forceRefundRequired', 'Force refund must be confirmed to proceed') }}</div>
       </div>
     </form>
 

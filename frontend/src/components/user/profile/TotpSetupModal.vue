@@ -323,6 +323,7 @@ const loadVerificationMethod = async () => {
 }
 
 const handleSendCode = async () => {
+  if (sendingCode.value) return
   sendingCode.value = true
   try {
     await totpAPI.sendVerifyCode()

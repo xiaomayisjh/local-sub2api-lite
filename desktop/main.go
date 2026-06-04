@@ -29,7 +29,7 @@ func main() {
 		Title:            buildWindowTitle(),
 		Width:            1280,
 		Height:           800,
-		BackgroundColour: &options.RGBA{R: 15, G: 23, B: 42, A: 255},
+		BackgroundColour: &options.RGBA{R: 250, G: 249, B: 245, A: 255},
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
@@ -54,9 +54,9 @@ func main() {
 
 func buildWindowTitle() string {
 	if IsDebugBuild {
-		return "Sub2API Local (Debug)"
+		return "ANT-Sub2API-Local (Debug)"
 	}
-	return "Sub2API Local"
+	return "ANT-Sub2API-Local"
 }
 
 func envBool(key string) bool {

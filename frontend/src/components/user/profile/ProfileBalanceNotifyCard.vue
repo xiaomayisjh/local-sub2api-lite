@@ -278,6 +278,7 @@ function addPendingEmail() {
 async function sendCodeFor(idx: number) {
   const pe = pendingEmails.value[idx]
   if (!pe) return
+  if (pe.sending) return
   pe.sending = true
   try {
     await userAPI.sendNotifyEmailCode(pe.email)

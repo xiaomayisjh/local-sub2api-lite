@@ -21,7 +21,7 @@ Push-Location (Join-Path $Root "desktop")
 go mod tidy
 $outDir = Join-Path $Root "dist"
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-$outFileName = if ($debugBuild) { "local-sub2api-lite-debug.exe" } else { "local-sub2api-lite.exe" }
+$outFileName = if ($debugBuild) { "ANT-Sub2API-Local-debug.exe" } else { "ANT-Sub2API-Local.exe" }
 $outFile = Join-Path $outDir $outFileName
 
 # Wails requires tag "production" (or "dev"); backend UI requires tag "embed".

@@ -17,9 +17,10 @@ import (
 )
 
 const (
-	securitySecretKeyJWT        = "jwt_secret"
-	securitySecretReadRetryMax  = 5
-	securitySecretReadRetryWait = 10 * time.Millisecond
+	securitySecretKeyJWT            = "jwt_secret"
+	securitySecretKeyTOTPEncryption = "totp_encryption_key"
+	securitySecretReadRetryMax      = 5
+	securitySecretReadRetryWait     = 10 * time.Millisecond
 )
 
 var readRandomBytes = rand.Read
@@ -32,6 +33,7 @@ func ensureBootstrapSecrets(ctx context.Context, client *ent.Client, cfg *config
 		return fmt.Errorf("nil config")
 	}
 
+	// ── JWT secret ──────────────────────────────────────────────────
 	cfg.JWT.Secret = strings.TrimSpace(cfg.JWT.Secret)
 	if cfg.JWT.Secret != "" {
 		storedSecret, err := createSecuritySecretIfAbsent(ctx, client, securitySecretKeyJWT, cfg.JWT.Secret)
@@ -42,18 +44,43 @@ func ensureBootstrapSecrets(ctx context.Context, client *ent.Client, cfg *config
 			log.Println("Warning: configured JWT secret mismatches persisted value; using persisted secret for cross-instance consistency.")
 		}
 		cfg.JWT.Secret = storedSecret
-		return nil
+	} else {
+		secret, created, err := getOrCreateGeneratedSecuritySecret(ctx, client, securitySecretKeyJWT, 32)
+		if err != nil {
+			return fmt.Errorf("ensure jwt secret: %w", err)
+		}
+		cfg.JWT.Secret = secret
+		if created {
+			log.Println("Warning: JWT secret auto-generated and persisted to database. Consider rotating to a managed secret for production.")
+		}
 	}
 
-	secret, created, err := getOrCreateGeneratedSecuritySecret(ctx, client, securitySecretKeyJWT, 32)
-	if err != nil {
-		return fmt.Errorf("ensure jwt secret: %w", err)
+	// ── TOTP / credential encryption key ────────────────────────────
+	// config.go 在 EncryptionKey 为空时已自动生成了一个临时随机密钥。
+	// 此处将其持久化到 security_secrets 表，使其在重启/跨实例间保持一致；
+	// 否则 channel_monitor APIKey 和 S3 backup SecretAccessKey 等使用
+	// AESEncryptor 加密的密文在下次启动后因密钥改变而永久不可解密。
+	cfg.Totp.EncryptionKey = strings.TrimSpace(cfg.Totp.EncryptionKey)
+	if cfg.Totp.EncryptionKey != "" {
+		storedKey, err := createSecuritySecretIfAbsent(ctx, client, securitySecretKeyTOTPEncryption, cfg.Totp.EncryptionKey)
+		if err != nil {
+			return fmt.Errorf("persist totp encryption key: %w", err)
+		}
+		if storedKey != cfg.Totp.EncryptionKey {
+			log.Println("Warning: configured TOTP encryption key mismatches persisted value; using persisted key for cross-instance consistency.")
+		}
+		cfg.Totp.EncryptionKey = storedKey
+		cfg.Totp.EncryptionKeyConfigured = true
+	} else {
+		// EncryptionKey 此时是 config.go 生成的临时密钥，持久化它。
+		encKey, _, err := getOrCreateGeneratedSecuritySecret(ctx, client, securitySecretKeyTOTPEncryption, 32)
+		if err != nil {
+			return fmt.Errorf("ensure totp encryption key: %w", err)
+		}
+		cfg.Totp.EncryptionKey = encKey
+		cfg.Totp.EncryptionKeyConfigured = true
 	}
-	cfg.JWT.Secret = secret
 
-	if created {
-		log.Println("Warning: JWT secret auto-generated and persisted to database. Consider rotating to a managed secret for production.")
-	}
 	return nil
 }
 

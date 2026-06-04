@@ -1,0 +1,31 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ANT-Sub2API-Local">
+  <defs>
+    <linearGradient id="ant-bg" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#d17f5c"/>
+      <stop offset="0.55" stop-color="#c15f3c"/>
+      <stop offset="1" stop-color="#a94f30"/>
+    </linearGradient>
+    <linearGradient id="ant-mark" x1="256" y1="120" x2="256" y2="392" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#faf9f5"/>
+      <stop offset="1" stop-color="#f0eee6"/>
+    </linearGradient>
+  </defs>
+  <!-- Warm clay rounded square -->
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#ant-bg)"/>
+  <!-- Subtle top inner highlight -->
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="white" fill-opacity="0.05"/>
+  <!-- "A" monogram: two legs + crossbar, cut from the clay field -->
+  <path d="M256 120
+           L372 392
+           L320 392
+           L295 330
+           L217 330
+           L192 392
+           L140 392
+           Z
+           M236 282
+           L276 282
+           L256 232
+           Z"
+        fill="url(#ant-mark)" fill-rule="evenodd"/>
+</svg>

@@ -109,9 +109,9 @@ const form = ref({
 
 const canSubmit = computed(() => {
   if (verificationMethod.value === 'email') {
-    return form.value.emailCode.length === 6
+    return form.value.emailCode.trim().length === 6
   }
-  return form.value.password.length > 0
+  return form.value.password.trim().length > 0
 })
 
 const loadVerificationMethod = async () => {

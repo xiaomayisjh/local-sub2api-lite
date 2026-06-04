@@ -6,6 +6,7 @@
     @close="$emit('close')"
   >
     <form id="create-user-form" @submit.prevent="submit" class="space-y-5">
+      <fieldset :disabled="loading" class="contents">
       <div>
         <label class="input-label">{{ t('admin.users.email') }}</label>
         <input v-model="form.email" type="email" required class="input" :placeholder="t('admin.users.enterEmail')" />
@@ -47,6 +48,7 @@
         />
         <p class="input-hint">{{ t('admin.users.form.rpmLimitHint') }}</p>
       </div>
+      </fieldset>
     </form>
     <template #footer>
       <div class="flex justify-end gap-3">

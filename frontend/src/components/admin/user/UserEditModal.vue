@@ -6,6 +6,7 @@
     @close="$emit('close')"
   >
     <form v-if="user" id="edit-user-form" @submit.prevent="handleUpdateUser" class="space-y-5">
+      <fieldset :disabled="submitting" class="contents">
       <div>
         <label class="input-label">{{ t('admin.users.email') }}</label>
         <input v-model="form.email" type="email" class="input" />
@@ -50,6 +51,7 @@
         <p class="input-hint">{{ t('admin.users.form.rpmLimitHint') }}</p>
       </div>
       <UserAttributeForm v-model="form.customAttributes" :user-id="user?.id" />
+      </fieldset>
     </form>
     <template #footer>
       <div class="flex justify-end gap-3">

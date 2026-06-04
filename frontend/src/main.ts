@@ -33,7 +33,7 @@ async function bootstrap() {
   authStore.applyRunModeFromSettings(appStore.cachedPublicSettings?.run_mode)
 
   // Set document title immediately after config is loaded
-  if (appStore.siteName && appStore.siteName !== 'Sub2API') {
+  if (appStore.siteName && appStore.siteName !== 'ANT-Sub2API-Local') {
     document.title = `${appStore.siteName} - AI API Gateway`
   }
 

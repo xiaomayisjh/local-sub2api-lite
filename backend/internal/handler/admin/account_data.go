@@ -296,6 +296,9 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 
 	for i := range dataPayload.Accounts {
 		item := dataPayload.Accounts[i]
+		// 归一化类型别名（如外部实例的 "api_key" → "apikey"），再做校验/建号/判重，
+		// 保证 validateDataAccount、CreateAccount、身份判重都看到规范类型。
+		item.Type = normalizeAccountType(item.Type)
 		if err := validateDataAccount(item); err != nil {
 			result.AccountFailed++
 			result.Errors = append(result.Errors, DataImportError{
@@ -561,12 +564,8 @@ func validateDataHeader(payload DataPayload) error {
 	if payload.Version != 0 && payload.Version != dataVersion {
 		return fmt.Errorf("unsupported data version: %d", payload.Version)
 	}
-	if payload.Proxies == nil {
-		return errors.New("proxies is required")
-	}
-	if payload.Accounts == nil {
-		return errors.New("accounts is required")
-	}
+	// proxies / accounts 均按可选处理：缺省（null 或缺字段）视为空集，不再报错。
+	// 这样仅含账号、仅含代理、或字段缺失的导出文件都能导入，而不是被整体拒绝。
 	return nil
 }
 
@@ -594,6 +593,26 @@ func validateDataProxy(item DataProxy) error {
 	return nil
 }
 
+// normalizeAccountType 归一化导入数据里的账号类型字符串：
+//   - 去空白
+//   - 兼容外部实例的历史别名（如 "api_key" → "apikey"、"serviceaccount" → "service_account"），
+//     使从其它 sub2api 实例导出的备份也能落到本项目的规范类型常量上。
+//
+// 返回规范化后的类型；无法识别的原样返回（交由 validateDataAccount 拒绝并报告）。
+func normalizeAccountType(raw string) string {
+	t := strings.ToLower(strings.TrimSpace(raw))
+	switch t {
+	case "api_key", "api-key":
+		return service.AccountTypeAPIKey // "apikey"
+	case "setup_token", "setuptoken":
+		return service.AccountTypeSetupToken // "setup-token"
+	case "serviceaccount", "service-account":
+		return service.AccountTypeServiceAccount // "service_account"
+	default:
+		return t
+	}
+}
+
 func validateDataAccount(item DataAccount) error {
 	if strings.TrimSpace(item.Name) == "" {
 		return errors.New("account name is required")
@@ -608,7 +627,12 @@ func validateDataAccount(item DataAccount) error {
 		return errors.New("account credentials is required")
 	}
 	switch item.Type {
-	case service.AccountTypeOAuth, service.AccountTypeSetupToken, service.AccountTypeAPIKey, service.AccountTypeUpstream:
+	case service.AccountTypeOAuth,
+		service.AccountTypeSetupToken,
+		service.AccountTypeAPIKey,
+		service.AccountTypeUpstream,
+		service.AccountTypeBedrock,
+		service.AccountTypeServiceAccount:
 	default:
 		return fmt.Errorf("account type is invalid: %s", item.Type)
 	}

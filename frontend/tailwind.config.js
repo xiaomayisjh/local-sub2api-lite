@@ -5,51 +5,67 @@ export default {
   theme: {
     extend: {
       colors: {
-        // 主色调 - Teal/Cyan 青色系
+        // 主色调 - Anthropic 黏土橙 (Clay / Terracotta)
         primary: {
-          50: '#f0fdfa',
-          100: '#ccfbf1',
-          200: '#99f6e4',
-          300: '#5eead4',
-          400: '#2dd4bf',
-          500: '#14b8a6',
-          600: '#0d9488',
-          700: '#0f766e',
-          800: '#115e59',
-          900: '#134e4a',
-          950: '#042f2e'
+          50: '#fbf3ef',
+          100: '#f6e5dc',
+          200: '#ecc8b6',
+          300: '#e0a88d',
+          400: '#d17f5c',
+          500: '#c15f3c',
+          600: '#a94f30',
+          700: '#8a3f27',
+          800: '#6e3220',
+          900: '#5a2a1c',
+          950: '#321610'
         },
-        // 辅助色 - 深蓝灰
+        // 辅助色 - 暖棕褐 (与 primary 形成同色温渐变)
         accent: {
-          50: '#f8fafc',
-          100: '#f1f5f9',
-          200: '#e2e8f0',
-          300: '#cbd5e1',
-          400: '#94a3b8',
-          500: '#64748b',
-          600: '#475569',
-          700: '#334155',
-          800: '#1e293b',
-          900: '#0f172a',
-          950: '#020617'
+          50: '#f8f6f1',
+          100: '#efece2',
+          200: '#ddd6c6',
+          300: '#c5bca6',
+          400: '#a89d83',
+          500: '#8a7e64',
+          600: '#6f6450',
+          700: '#574e3f',
+          800: '#3f3a30',
+          900: '#2a2722',
+          950: '#1a1814'
         },
-        // 深色模式背景
+        // 中性灰 - 暖石色 (覆盖 Tailwind 默认冷灰，全站统一暖色调)
+        gray: {
+          50: '#faf9f5',
+          100: '#f0eee6',
+          200: '#e3e1d8',
+          300: '#d1cec2',
+          400: '#b0ab9a',
+          500: '#8c8676',
+          600: '#6b6557',
+          700: '#524d42',
+          800: '#3a362e',
+          900: '#262420',
+          950: '#1a1814'
+        },
+        // 深色模式背景 - 暖深褐/炭
         dark: {
-          50: '#f8fafc',
-          100: '#f1f5f9',
-          200: '#e2e8f0',
-          300: '#cbd5e1',
-          400: '#94a3b8',
-          500: '#64748b',
-          600: '#475569',
-          700: '#334155',
-          800: '#1e293b',
-          900: '#0f172a',
-          950: '#020617'
+          50: '#f7f6f2',
+          100: '#edebe4',
+          200: '#d9d6cc',
+          300: '#b8b3a6',
+          400: '#8f8a7c',
+          500: '#6b6557',
+          600: '#4e4a40',
+          700: '#3a362e',
+          800: '#2a2722',
+          900: '#1e1b17',
+          950: '#161310'
         }
       },
       fontFamily: {
         sans: [
+          'Styrene',
+          'ui-sans-serif',
           'system-ui',
           '-apple-system',
           'BlinkMacSystemFont',
@@ -62,25 +78,36 @@ export default {
           'Microsoft YaHei',
           'sans-serif'
         ],
+        // 衬线字体 - 用于标题，呼应 Anthropic 官网 Tiempos/Copernicus 风格
+        serif: [
+          'Tiempos',
+          'Copernicus',
+          'Georgia',
+          'Songti SC',
+          'STSong',
+          'Noto Serif SC',
+          'ui-serif',
+          'serif'
+        ],
         mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace']
       },
       boxShadow: {
-        glass: '0 8px 32px rgba(0, 0, 0, 0.08)',
-        'glass-sm': '0 4px 16px rgba(0, 0, 0, 0.06)',
-        glow: '0 0 20px rgba(20, 184, 166, 0.25)',
-        'glow-lg': '0 0 40px rgba(20, 184, 166, 0.35)',
-        card: '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.06)',
-        'card-hover': '0 10px 40px rgba(0, 0, 0, 0.08)',
-        'inner-glow': 'inset 0 1px 0 rgba(255, 255, 255, 0.1)'
+        glass: '0 8px 32px rgba(74, 60, 46, 0.10)',
+        'glass-sm': '0 4px 16px rgba(74, 60, 46, 0.08)',
+        glow: '0 0 18px rgba(193, 95, 60, 0.18)',
+        'glow-lg': '0 0 32px rgba(193, 95, 60, 0.24)',
+        card: '0 1px 3px rgba(60, 50, 40, 0.05), 0 1px 2px rgba(60, 50, 40, 0.07)',
+        'card-hover': '0 10px 32px rgba(60, 50, 40, 0.10)',
+        'inner-glow': 'inset 0 1px 0 rgba(255, 255, 255, 0.12)'
       },
       backgroundImage: {
         'gradient-radial': 'radial-gradient(var(--tw-gradient-stops))',
-        'gradient-primary': 'linear-gradient(135deg, #14b8a6 0%, #0d9488 100%)',
-        'gradient-dark': 'linear-gradient(135deg, #1e293b 0%, #0f172a 100%)',
+        'gradient-primary': 'linear-gradient(135deg, #c15f3c 0%, #a94f30 100%)',
+        'gradient-dark': 'linear-gradient(135deg, #2a2722 0%, #1e1b17 100%)',
         'gradient-glass':
-          'linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.05) 100%)',
+          'linear-gradient(135deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0.05) 100%)',
         'mesh-gradient':
-          'radial-gradient(at 40% 20%, rgba(20, 184, 166, 0.12) 0px, transparent 50%), radial-gradient(at 80% 0%, rgba(6, 182, 212, 0.08) 0px, transparent 50%), radial-gradient(at 0% 50%, rgba(20, 184, 166, 0.08) 0px, transparent 50%)'
+          'radial-gradient(at 40% 20%, rgba(193, 95, 60, 0.08) 0px, transparent 50%), radial-gradient(at 80% 0%, rgba(168, 157, 131, 0.06) 0px, transparent 50%), radial-gradient(at 0% 50%, rgba(193, 95, 60, 0.05) 0px, transparent 50%)'
       },
       animation: {
         'fade-in': 'fadeIn 0.3s ease-out',
@@ -118,8 +145,8 @@ export default {
           '100%': { backgroundPosition: '200% 0' }
         },
         glow: {
-          '0%': { boxShadow: '0 0 20px rgba(20, 184, 166, 0.25)' },
-          '100%': { boxShadow: '0 0 30px rgba(20, 184, 166, 0.4)' }
+          '0%': { boxShadow: '0 0 18px rgba(193, 95, 60, 0.18)' },
+          '100%': { boxShadow: '0 0 28px rgba(193, 95, 60, 0.30)' }
         }
       },
       backdropBlur: {

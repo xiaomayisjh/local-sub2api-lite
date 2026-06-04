@@ -1595,11 +1595,11 @@ func contentModerationEmailVariables(log *ContentModerationLog, cfg *ContentMode
 
 func (s *ContentModerationService) siteName(ctx context.Context) string {
 	if s == nil || s.settingRepo == nil {
-		return "Sub2API"
+		return "ANT-Sub2API-Local"
 	}
 	name, err := s.settingRepo.GetValue(ctx, SettingKeySiteName)
 	if err != nil || strings.TrimSpace(name) == "" {
-		return "Sub2API"
+		return "ANT-Sub2API-Local"
 	}
 	return strings.TrimSpace(name)
 }

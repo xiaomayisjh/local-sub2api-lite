@@ -22,6 +22,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
@@ -4196,6 +4197,31 @@ func filterEmptyPartsFromGeminiRequest(body []byte) ([]byte, error) {
 	return json.Marshal(payload)
 }
 
+// validateUpstreamBaseURL 校验 upstream 账号的 base_url 并返回规范化结果。
+//   - 未启用 URL 白名单时仅做格式校验（与 GatewayService.validateUpstreamBaseURL 行为一致）；
+//   - 启用白名单时强制 HTTPS、命中 UpstreamHosts 白名单，并阻断私网/内网/元数据地址，
+//     防止 upstream 透传被用作 SSRF 跳板。
+func (s *AntigravityGatewayService) validateUpstreamBaseURL(raw string) (string, error) {
+	if s.settingService == nil || s.settingService.cfg == nil || !s.settingService.cfg.Security.URLAllowlist.Enabled {
+		allowInsecure := s.settingService != nil && s.settingService.cfg != nil && s.settingService.cfg.Security.URLAllowlist.AllowInsecureHTTP
+		normalized, err := urlvalidator.ValidateURLFormat(raw, allowInsecure)
+		if err != nil {
+			return "", fmt.Errorf("invalid base_url: %w", err)
+		}
+		return normalized, nil
+	}
+	cfg := s.settingService.cfg
+	normalized, err := urlvalidator.ValidateHTTPSURL(raw, urlvalidator.ValidationOptions{
+		AllowedHosts:     cfg.Security.URLAllowlist.UpstreamHosts,
+		RequireAllowlist: true,
+		AllowPrivate:     cfg.Security.URLAllowlist.AllowPrivateHosts,
+	})
+	if err != nil {
+		return "", fmt.Errorf("invalid base_url: %w", err)
+	}
+	return normalized, nil
+}
+
 // ForwardUpstream 使用 base_url + /v1/messages + 双 header 认证透传上游 Claude 请求
 func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.Context, account *Account, body []byte) (*ForwardResult, error) {
 	startTime := time.Now()
@@ -4208,7 +4234,14 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 	if baseURL == "" || apiKey == "" {
 		return nil, fmt.Errorf("upstream account missing base_url or api_key")
 	}
-	baseURL = strings.TrimSuffix(baseURL, "/")
+	// 经 URL 白名单/SSRF 校验后再使用：与 gateway_service.go 的 upstream 透传路径保持一致，
+	// 避免 upstream 账号的 base_url 指向内网/元数据地址（169.254.169.254、127.0.0.1 等）。
+	// validateUpstreamBaseURL 已规范化并去除尾部斜杠。
+	validatedBase, err := s.validateUpstreamBaseURL(baseURL)
+	if err != nil {
+		return nil, err
+	}
+	baseURL = strings.TrimSuffix(validatedBase, "/")
 
 	// 解析请求获取模型信息
 	var claudeReq antigravity.ClaudeRequest
@@ -4293,9 +4326,14 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 		firstTokenMs = streamRes.firstTokenMs
 		clientDisconnect = streamRes.clientDisconnect
 	} else {
-		// 非流式响应：直接透传
-		respBody, err := io.ReadAll(resp.Body)
+		// 非流式响应：直接透传（限制最大读取字节，避免恶意/异常上游返回超大响应耗尽内存，
+		// 与网关其余透传路径统一使用 ReadUpstreamResponseBody）。
+		respBody, err := ReadUpstreamResponseBody(resp.Body, s.settingService.cfg, c, anthropicTooLargeError)
 		if err != nil {
+			if errors.Is(err, ErrUpstreamResponseBodyTooLarge) {
+				// 响应已由 anthropicTooLargeError 写入客户端。
+				return &ForwardResult{Model: originalModel}, nil
+			}
 			return nil, fmt.Errorf("read upstream response: %w", err)
 		}
 

@@ -1,6 +1,8 @@
-# local-sub2api-lite
+# ANT-Sub2API-Local
 
-跨平台自用 AI API 网关桌面版。基于 [Wei-Shaw/sub2api](https://github.com/Wei-Shaw/sub2api) 二次开发，面向个人本地使用，不面向多租户 SaaS 部署。
+跨平台自用 AI API 网关桌面版，采用 Anthropic 官网风格界面（暖米白底 + 黏土橙点缀、衬线标题）。基于 [Wei-Shaw/sub2api](https://github.com/Wei-Shaw/sub2api) 二次开发，面向个人本地使用，不面向多租户 SaaS 部署。
+
+> 仓库目录名与 Go 模块路径仍为 `local-sub2api-lite` / `github.com/Wei-Shaw/sub2api`；`ANT-Sub2API-Local` 是产品/显示名称（窗口标题、站点名、构建产物文件名）。
 
 [English](README.md)
 
@@ -46,10 +48,10 @@ cd ..
 # 手动构建（必须同时带 production + embed）
 cd desktop
 go mod tidy
-go build -tags "production,embed" -ldflags "-s -w -H windowsgui" -o ../dist/local-sub2api-lite.exe .
+go build -tags "production,embed" -ldflags "-s -w -H windowsgui" -o ../dist/ANT-Sub2API-Local.exe .
 ```
 
-产物：`dist/local-sub2api-lite.exe`（约 90MB，含内嵌前端与 WebView）。
+产物：`dist/ANT-Sub2API-Local.exe`（约 95MB，含内嵌前端与 WebView）。
 
 开发调试（需安装 [Wails CLI](https://wails.io/)）：
 

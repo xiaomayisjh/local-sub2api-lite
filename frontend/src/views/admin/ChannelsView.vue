@@ -68,7 +68,8 @@
           <template #cell-status="{ row }">
             <Toggle
               :modelValue="row.status === 'active'"
-              @update:modelValue="toggleChannelStatus(row)"
+              :disabled="togglingChannelIds.has(row.id)"
+              @update:modelValue="confirmToggleStatus(row)"
             />
           </template>
 
@@ -599,6 +600,15 @@
             :disabled="submitting"
             class="btn btn-primary"
           >
+            <svg
+              v-if="submitting"
+              class="-ml-1 mr-2 h-4 w-4 animate-spin"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
             {{ submitting
               ? t('common.submitting', 'Submitting...')
               : editingChannel
@@ -620,6 +630,18 @@
       :danger="true"
       @confirm="confirmDelete"
       @cancel="showDeleteDialog = false"
+    />
+
+    <!-- Status Toggle Confirmation -->
+    <ConfirmDialog
+      :show="showStatusToggleDialog"
+      :title="t('admin.channels.toggleStatusTitle', 'Change Channel Status')"
+      :message="statusToggleMessage"
+      :confirm-text="t('common.confirm', 'Confirm')"
+      :cancel-text="t('common.cancel', 'Cancel')"
+      :danger="togglingChannel?.status === 'active'"
+      @confirm="confirmStatusToggle"
+      @cancel="cancelStatusToggle"
     />
   </AppLayout>
 </template>
@@ -737,6 +759,9 @@ const editingChannel = ref<Channel | null>(null)
 const submitting = ref(false)
 const showDeleteDialog = ref(false)
 const deletingChannel = ref<Channel | null>(null)
+const togglingChannelIds = ref<Set<number>>(new Set())
+const showStatusToggleDialog = ref(false)
+const togglingChannel = ref<Channel | null>(null)
 const activeTab = ref<string>('basic')
 
 // Groups
@@ -1558,8 +1583,38 @@ async function handleSubmit() {
 }
 
 // ── Toggle status ──
+const statusToggleMessage = computed(() => {
+  const ch = togglingChannel.value
+  if (!ch) return ''
+  const name = ch.name || ''
+  return ch.status === 'active'
+    ? t('admin.channels.disableStatusConfirm', { name }, `Disable channel "${name}"? Requests routed through it will stop.`)
+    : t('admin.channels.enableStatusConfirm', { name }, `Enable channel "${name}"?`)
+})
+
+function confirmToggleStatus(channel: Channel) {
+  if (togglingChannelIds.value.has(channel.id)) return
+  togglingChannel.value = channel
+  showStatusToggleDialog.value = true
+}
+
+function cancelStatusToggle() {
+  showStatusToggleDialog.value = false
+  togglingChannel.value = null
+}
+
+async function confirmStatusToggle() {
+  const channel = togglingChannel.value
+  showStatusToggleDialog.value = false
+  if (!channel) return
+  togglingChannel.value = null
+  await toggleChannelStatus(channel)
+}
+
 async function toggleChannelStatus(channel: Channel) {
+  if (togglingChannelIds.value.has(channel.id)) return
   const newStatus = channel.status === 'active' ? 'disabled' : 'active'
+  togglingChannelIds.value = new Set(togglingChannelIds.value).add(channel.id)
   try {
     await adminAPI.channels.update(channel.id, { status: newStatus })
     if (filters.status && filters.status !== newStatus) {
@@ -1568,9 +1623,14 @@ async function toggleChannelStatus(channel: Channel) {
     } else {
       channel.status = newStatus
     }
+    appStore.showSuccess(t('admin.channels.updateSuccess', 'Channel updated'))
   } catch (error) {
     appStore.showError(t('admin.channels.updateError', 'Failed to update channel'))
     console.error('Error toggling channel status:', error)
+  } finally {
+    const next = new Set(togglingChannelIds.value)
+    next.delete(channel.id)
+    togglingChannelIds.value = next
   }
 }
 

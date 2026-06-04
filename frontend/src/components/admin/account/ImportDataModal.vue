@@ -185,8 +185,26 @@ const readFileAsText = async (sourceFile: File): Promise<string> => {
   })
 }
 
-const createEmptyResult = (): AdminDataImportResult => ({
-  proxy_created: 0,
+// 解包导出文件：兼容两种格式——
+// 1) 裸 payload：{ proxies, accounts, ... }（本应用前端导出后的形态，已被响应拦截器解包）
+// 2) API 信封：{ code, message, data: { proxies, accounts } }（直接保存接口原始响应的文件，
+//    例如从外部 sub2api 实例 curl 下来的备份）。此时真实 payload 在 .data 里。
+const unwrapDataPayload = (raw: any): any => {
+  if (
+    raw &&
+    typeof raw === 'object' &&
+    'code' in raw &&
+    'data' in raw &&
+    raw.data &&
+    typeof raw.data === 'object' &&
+    !Array.isArray(raw.data)
+  ) {
+    return raw.data
+  }
+  return raw
+}
+
+const createEmptyResult = (): AdminDataImportResult => ({  proxy_created: 0,
   proxy_reused: 0,
   proxy_failed: 0,
   account_created: 0,
@@ -236,7 +254,7 @@ const handleImport = async () => {
       let dataPayload: any
       try {
         const text = await readFileAsText(sourceFile)
-        dataPayload = JSON.parse(text)
+        dataPayload = unwrapDataPayload(JSON.parse(text))
       } catch (error: any) {
         aggregate.account_failed += 1
         aggregate.errors?.push({

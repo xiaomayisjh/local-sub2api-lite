@@ -788,10 +788,10 @@ func TestIdempotencyCoordinator_HelperBranches(t *testing.T) {
 	err := c.conflictWithRetryAfter(base, nil, time.Now())
 	require.Equal(t, infraerrors.Code(base), infraerrors.Code(err))
 
-	// marshalStoredResponse should truncate.
+	// marshalStoredResponse should emit omitted sentinel when body exceeds MaxStoredResponseLen.
 	body, err := c.marshalStoredResponse(map[string]any{"long": "abcdefghijklmnopqrstuvwxyz"})
 	require.NoError(t, err)
-	require.Contains(t, body, "...(truncated)")
+	require.Contains(t, body, "__idempotency_body_omitted")
 
 	// decodeStoredResponse empty and invalid json.
 	out, err := c.decodeStoredResponse(nil)

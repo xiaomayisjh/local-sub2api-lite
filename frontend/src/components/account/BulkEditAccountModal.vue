@@ -997,8 +997,9 @@
           <div class="flex space-x-2">
             <button type="button" v-for="opt in umqModeOptions" :key="opt.value"
               @click="userMsgQueueMode = userMsgQueueMode === opt.value ? null : opt.value"
+              :disabled="submitting"
               :class="[
-                'px-3 py-1.5 text-sm rounded-md border transition-colors',
+                'px-3 py-1.5 text-sm rounded-md border transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
                 userMsgQueueMode === opt.value
                   ? 'bg-primary-600 text-white border-primary-600'
                   : 'bg-white dark:bg-dark-700 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-dark-500 hover:bg-gray-50 dark:hover:bg-dark-600'

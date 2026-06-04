@@ -75,10 +75,9 @@
   }
 
   .btn-primary {
-    @apply bg-gradient-to-r from-primary-500 to-primary-600;
-    @apply text-white shadow-md shadow-primary-500/25;
-    @apply hover:from-primary-600 hover:to-primary-700 hover:shadow-lg hover:shadow-primary-500/30;
-    @apply dark:shadow-primary-500/20;
+    @apply bg-primary-600 text-white shadow-sm;
+    @apply hover:bg-primary-700 hover:shadow;
+    @apply active:bg-primary-800;
   }
 
   .btn-secondary {
@@ -275,7 +274,7 @@
   }
 
   .stat-value {
-    @apply text-2xl font-bold text-gray-900 dark:text-white truncate;
+    @apply font-serif text-2xl font-bold text-gray-900 dark:text-white truncate;
   }
 
   .stat-label {
@@ -398,7 +397,7 @@
   }
 
   .modal-title {
-    @apply text-lg font-semibold text-gray-900 dark:text-white;
+    @apply font-serif text-lg font-semibold tracking-tight text-gray-900 dark:text-white;
   }
 
   .modal-body {
@@ -580,7 +579,7 @@
   }
 
   .page-title {
-    @apply text-2xl font-bold text-gray-900 dark:text-white;
+    @apply font-serif text-2xl font-semibold tracking-tight text-gray-900 dark:text-white;
   }
 
   .page-description {
@@ -599,7 +598,7 @@
   }
 
   .empty-state-title {
-    @apply mb-1 text-lg font-medium text-gray-900 dark:text-white;
+    @apply mb-1 font-serif text-lg font-medium text-gray-900 dark:text-white;
   }
 
   .empty-state-description {

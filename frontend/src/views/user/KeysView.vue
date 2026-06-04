@@ -330,9 +330,10 @@
               </button>
               <!-- Toggle Status Button -->
               <button
-                @click="toggleKeyStatus(row)"
+                @click="confirmToggleStatus(row)"
+                :disabled="togglingKeys.has(row.id)"
                 :class="[
-                  'flex flex-col items-center gap-0.5 rounded-lg p-1.5 transition-colors',
+                  'flex flex-col items-center gap-0.5 rounded-lg p-1.5 transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
                   row.status === 'active'
                     ? 'text-gray-500 hover:bg-yellow-50 hover:text-yellow-600 dark:hover:bg-yellow-900/20 dark:hover:text-yellow-400'
                     : 'text-gray-500 hover:bg-green-50 hover:text-green-600 dark:hover:bg-green-900/20 dark:hover:text-green-400'
@@ -920,6 +921,20 @@
       @cancel="showResetRateLimitDialog = false"
     />
 
+    <!-- Toggle Status Confirmation Dialog -->
+    <ConfirmDialog
+      :show="showToggleStatusDialog"
+      :title="selectedKey?.status === 'active' ? t('keys.disable', 'Disable Key') : t('keys.enable', 'Enable Key')"
+      :message="selectedKey?.status === 'active'
+        ? t('keys.disableConfirmMessage', { name: selectedKey?.name }, `Disable key “${selectedKey?.name}”? Requests using it will be rejected.`)
+        : t('keys.enableConfirmMessage', { name: selectedKey?.name }, `Enable key “${selectedKey?.name}”?`)"
+      :confirm-text="t('common.confirm', 'Confirm')"
+      :cancel-text="t('common.cancel', 'Cancel')"
+      :danger="selectedKey?.status === 'active'"
+      @confirm="handleToggleStatus"
+      @cancel="cancelToggleStatus"
+    />
+
     <!-- Use Key Modal -->
     <UseKeyModal
       :show="showUseKeyModal"
@@ -1142,6 +1157,8 @@ const showEditModal = ref(false)
 const showDeleteDialog = ref(false)
 const showResetQuotaDialog = ref(false)
 const showResetRateLimitDialog = ref(false)
+const showToggleStatusDialog = ref(false)
+const togglingKeys = ref<Set<number>>(new Set())
 const showUseKeyModal = ref(false)
 const showCcsClientSelect = ref(false)
 const pendingCcsRow = ref<ApiKey | null>(null)
@@ -1413,8 +1430,29 @@ const editKey = (key: ApiKey) => {
   showEditModal.value = true
 }
 
+const confirmToggleStatus = (key: ApiKey) => {
+  if (togglingKeys.value.has(key.id)) return
+  selectedKey.value = key
+  showToggleStatusDialog.value = true
+}
+
+const cancelToggleStatus = () => {
+  showToggleStatusDialog.value = false
+  selectedKey.value = null
+}
+
+const handleToggleStatus = async () => {
+  const key = selectedKey.value
+  showToggleStatusDialog.value = false
+  if (!key) return
+  selectedKey.value = null
+  await toggleKeyStatus(key)
+}
+
 const toggleKeyStatus = async (key: ApiKey) => {
+  if (togglingKeys.value.has(key.id)) return
   const newStatus = key.status === 'active' ? 'inactive' : 'active'
+  togglingKeys.value = new Set(togglingKeys.value).add(key.id)
   try {
     await keysAPI.toggleStatus(key.id, newStatus)
     appStore.showSuccess(
@@ -1423,6 +1461,10 @@ const toggleKeyStatus = async (key: ApiKey) => {
     loadApiKeys()
   } catch (error) {
     appStore.showError(t('keys.failedToUpdateStatus'))
+  } finally {
+    const next = new Set(togglingKeys.value)
+    next.delete(key.id)
+    togglingKeys.value = next
   }
 }
 

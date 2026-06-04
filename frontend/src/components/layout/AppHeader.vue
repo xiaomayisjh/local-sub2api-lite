@@ -12,7 +12,7 @@
         </button>
 
         <div class="hidden lg:block">
-          <h1 class="text-lg font-semibold text-gray-900 dark:text-white">
+          <h1 class="font-serif text-lg font-semibold tracking-tight text-gray-900 dark:text-white">
             {{ pageTitle }}
           </h1>
           <p v-if="pageDescription" class="text-xs text-gray-500 dark:text-dark-400">
@@ -186,7 +186,8 @@
               <div class="border-t border-gray-100 py-1 dark:border-dark-700">
                 <button
                   @click="handleLogout"
-                  class="dropdown-item w-full text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
+                  :disabled="isLoggingOut"
+                  class="dropdown-item w-full text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   <svg
                     class="h-4 w-4"
@@ -233,6 +234,7 @@ const onboardingStore = useOnboardingStore()
 
 const user = computed(() => authStore.user)
 const dropdownOpen = ref(false)
+const isLoggingOut = ref(false)
 const dropdownRef = ref<HTMLElement | null>(null)
 const contactInfo = computed(() => appStore.contactInfo)
 const docUrl = computed(() => appStore.docUrl)
@@ -302,12 +304,15 @@ function closeDropdown() {
 }
 
 async function handleLogout() {
+  if (isLoggingOut.value) return
+  isLoggingOut.value = true
   closeDropdown()
   try {
     await authStore.logout()
   } catch (error) {
-    // Ignore logout errors - still redirect to login
     console.error('Logout error:', error)
+  } finally {
+    isLoggingOut.value = false
   }
   await router.push('/login')
 }

@@ -168,8 +168,7 @@ async function handleCancel() {
     router.push('/purchase')
   } catch (err: unknown) {
     appStore.showError(extractI18nErrorMessage(err, t, 'payment.errors', t('common.error')))
-  } finally {
-    cancelling.value = false
+    setTimeout(() => { cancelling.value = false }, 1500)
   }
 }
 

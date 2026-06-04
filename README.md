@@ -1,6 +1,8 @@
-# local-sub2api-lite
+# ANT-Sub2API-Local
 
-Cross-platform **personal desktop** AI API gateway. A fork of [Wei-Shaw/sub2api](https://github.com/Wei-Shaw/sub2api) for local single-user use, not multi-tenant SaaS.
+Cross-platform **personal desktop** AI API gateway with an Anthropic-inspired UI (warm off-white + clay accent, serif headings). A fork of [Wei-Shaw/sub2api](https://github.com/Wei-Shaw/sub2api) for local single-user use, not multi-tenant SaaS.
+
+> Repo directory and Go module path remain `local-sub2api-lite` / `github.com/Wei-Shaw/sub2api`; `ANT-Sub2API-Local` is the product/display name (window title, site name, build artifacts).
 
 [中文](README_CN.md)
 
@@ -42,10 +44,10 @@ cd ..
 # Manual build (requires both production and embed tags)
 cd desktop
 go mod tidy
-go build -tags "production,embed" -ldflags "-s -w -H windowsgui" -o ../dist/local-sub2api-lite.exe .
+go build -tags "production,embed" -ldflags "-s -w -H windowsgui" -o ../dist/ANT-Sub2API-Local.exe .
 ```
 
-Output: `dist/local-sub2api-lite.exe` (~90MB, embedded UI + WebView).
+Output: `dist/ANT-Sub2API-Local.exe` (~95MB, embedded UI + WebView).
 
 For development with hot reload (requires [Wails CLI](https://wails.io/)):
 

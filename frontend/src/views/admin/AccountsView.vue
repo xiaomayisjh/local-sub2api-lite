@@ -397,12 +397,23 @@
     />
     <TempUnschedStatusModal :show="showTempUnsched" :account="tempUnschedAcc" @close="showTempUnsched = false" @reset="handleTempUnschedReset" />
     <ConfirmDialog :show="showDeleteDialog" :title="t('admin.accounts.deleteAccount')" :message="t('admin.accounts.deleteConfirm', { name: deletingAcc?.name })" :confirm-text="t('common.delete')" :cancel-text="t('common.cancel')" :danger="true" @confirm="confirmDelete" @cancel="showDeleteDialog = false" />
-    <ConfirmDialog :show="showExportDataDialog" :title="t('admin.accounts.dataExport')" :message="t('admin.accounts.dataExportConfirmMessage')" :confirm-text="t('admin.accounts.dataExportConfirm')" :cancel-text="t('common.cancel')" @confirm="handleExportData" @cancel="showExportDataDialog = false">
+    <ConfirmDialog :show="showExportDataDialog" :title="t('admin.accounts.dataExport')" :message="t('admin.accounts.dataExportConfirmMessage')" :confirm-text="t('admin.accounts.dataExportConfirm')" :cancel-text="t('common.cancel')" :loading="exportingData" @confirm="handleExportData" @cancel="showExportDataDialog = false">
       <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
         <input type="checkbox" class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" v-model="includeProxyOnExport" />
         <span>{{ t('admin.accounts.dataExportIncludeProxies') }}</span>
       </label>
     </ConfirmDialog>
+    <ConfirmDialog
+      :show="showBulkDeleteDialog"
+      :title="t('admin.accounts.bulkActions.deleteTitle', 'Delete Selected Accounts')"
+      :message="t('admin.accounts.bulkActions.deleteConfirm', { count: selIds.length }, `Delete ${selIds.length} selected account(s)? This action cannot be undone.`)"
+      :confirm-text="t('common.delete')"
+      :cancel-text="t('common.cancel')"
+      :danger="true"
+      :loading="bulkDeleting"
+      @confirm="confirmBulkDelete"
+      @cancel="showBulkDeleteDialog = false"
+    />
     <ErrorPassthroughRulesModal :show="showErrorPassthrough" @close="showErrorPassthrough = false" />
     <TLSFingerprintProfilesModal :show="showTLSFingerprintProfiles" @close="showTLSFingerprintProfiles = false" />
     <BatchTestAccountsModal
@@ -523,6 +534,8 @@ const showBulkEdit = ref(false)
 const bulkEditTarget = ref<AccountBulkEditTarget | null>(null)
 const showTempUnsched = ref(false)
 const showDeleteDialog = ref(false)
+const showBulkDeleteDialog = ref(false)
+const bulkDeleting = ref(false)
 const showReAuth = ref(false)
 const showTest = ref(false)
 const showStats = ref(false)
@@ -1364,7 +1377,23 @@ const handleSelectAllFiltered = async () => {
     isSelectingAllFiltered.value = false
   }
 }
-const handleBulkDelete = async () => { if(!confirm(t('common.confirm'))) return; try { await Promise.all(selIds.value.map(id => adminAPI.accounts.delete(id))); clearSelection(); reload() } catch (error) { console.error('Failed to bulk delete accounts:', error) } }
+const handleBulkDelete = () => { if (!selIds.value.length) return; showBulkDeleteDialog.value = true }
+const confirmBulkDelete = async () => {
+  if (bulkDeleting.value || !selIds.value.length) return
+  bulkDeleting.value = true
+  try {
+    await Promise.all(selIds.value.map(id => adminAPI.accounts.delete(id)))
+    appStore.showSuccess(t('admin.accounts.bulkActions.deleteSuccess', { count: selIds.value.length }, `Deleted ${selIds.value.length} account(s)`))
+    showBulkDeleteDialog.value = false
+    clearSelection()
+    reload()
+  } catch (error) {
+    console.error('Failed to bulk delete accounts:', error)
+    appStore.showError(t('admin.accounts.bulkActions.deleteFailed', 'Failed to delete some accounts'))
+  } finally {
+    bulkDeleting.value = false
+  }
+}
 const handleBulkResetStatus = async () => {
   if (!confirm(t('common.confirm'))) return
   try {
@@ -1825,6 +1854,7 @@ const handleResetQuota = async (a: Account) => {
     appStore.showSuccess(t('common.success'))
   } catch (error) {
     console.error('Failed to reset quota:', error)
+    appStore.showError(t('admin.accounts.resetQuotaFailed', 'Failed to reset quota'))
   }
 }
 const handleSetPrivacy = async (a: Account) => {

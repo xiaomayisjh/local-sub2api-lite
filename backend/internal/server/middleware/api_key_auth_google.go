@@ -6,6 +6,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/googleapi"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -57,6 +58,22 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
 		if _, message, ok := validateAPIKeyGroupAvailable(apiKey); !ok {
 			abortWithGoogleError(c, 403, message)
 			return
+		}
+
+		// 检查 IP 限制（白名单/黑名单），与 Anthropic 侧 api_key_auth.go 保持一致。
+		// 此前 Gemini 原生 / Antigravity-Gemini 端点漏掉了这层校验，导致带 IP ACL 的
+		// Key 可绕过白名单从 /v1beta 通道访问。错误信息故意模糊，避免暴露具体的限制机制。
+		if len(apiKey.IPWhitelist) > 0 || len(apiKey.IPBlacklist) > 0 {
+			clientIP := ip.GetTrustedClientIP(c)
+			if cfg.TrustForwardedIPForAPIKeyACL() {
+				clientIP = ip.GetClientIP(c)
+			}
+			allowed, _ := ip.CheckIPRestrictionWithCompiledRules(clientIP, apiKey.CompiledIPWhitelist, apiKey.CompiledIPBlacklist)
+			if !allowed {
+				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonIPRestriction)
+				abortWithGoogleError(c, 403, "Access denied")
+				return
+			}
 		}
 
 		// 简易模式：跳过余额和订阅检查

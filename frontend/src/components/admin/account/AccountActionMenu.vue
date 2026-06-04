@@ -10,7 +10,7 @@
       >
         <div class="py-1">
           <template v-if="account">
-            <button @click="$emit('test', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-dark-700">
+            <button @click="handleTest" :disabled="testLoading" class="flex w-full items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-dark-700 disabled:opacity-50">
               <Icon name="play" size="sm" class="text-green-500" :stroke-width="2" />
               {{ t('admin.accounts.testConnection') }}
             </button>
@@ -53,7 +53,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, watch, onUnmounted } from 'vue'
+import { computed, ref, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Icon } from '@/components/icons'
 import type { Account } from '@/types'
@@ -61,6 +61,17 @@ import type { Account } from '@/types'
 const props = defineProps<{ show: boolean; account: Account | null; position: { top: number; left: number } | null }>()
 const emit = defineEmits(['close', 'test', 'stats', 'schedule', 'reauth', 'refresh-token', 'recover-state', 'reset-quota', 'set-privacy'])
 const { t } = useI18n()
+const testLoading = ref(false)
+
+function handleTest() {
+  if (testLoading.value) return
+  testLoading.value = true
+  emit('test', props.account)
+  emit('close')
+  setTimeout(() => {
+    testLoading.value = false
+  }, 300)
+}
 const isRateLimited = computed(() => {
   if (props.account?.rate_limit_reset_at && new Date(props.account.rate_limit_reset_at) > new Date()) {
     return true

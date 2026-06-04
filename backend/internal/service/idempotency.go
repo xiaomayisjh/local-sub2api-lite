@@ -452,9 +452,18 @@ func (c *IdempotencyCoordinator) marshalStoredResponse(data any) (string, error)
 	if err != nil {
 		return "", err
 	}
-	redacted := logredact.RedactText(string(raw))
-	if c.cfg.MaxStoredResponseLen > 0 && len(redacted) > c.cfg.MaxStoredResponseLen {
-		redacted = redacted[:c.cfg.MaxStoredResponseLen] + "...(truncated)"
+	rawStr := string(raw)
+
+	// 对存储体做脱敏：避免在未加密的 response_body 列泄露敏感凭证。
+	redacted := logredact.RedactText(rawStr)
+
+	// 脱敏或截断后的 JSON 不能忠实还原原始响应，将其替换为有效 JSON 标记，
+	// 避免：(1) 脱敏后重放时返回 "***" 假凭证（#4），
+	//        (2) 截断后产生的无效 JSON 导致解码失败返回 503（#7）。
+	bodyRedacted := redacted != rawStr
+	bodyTruncated := c.cfg.MaxStoredResponseLen > 0 && len(redacted) > c.cfg.MaxStoredResponseLen
+	if bodyRedacted || bodyTruncated {
+		return `{"__idempotency_body_omitted":true}`, nil
 	}
 	return redacted, nil
 }

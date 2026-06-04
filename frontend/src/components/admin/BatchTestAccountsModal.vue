@@ -101,6 +101,7 @@
         </div>
 
         <div v-if="!running && progress.length > 0" class="space-y-3">
+          <div v-if="bulkBusy !== null" class="mb-3 rounded-lg border border-primary-200 bg-primary-50 px-3 py-2 text-sm text-primary-800 dark:border-primary-800 dark:bg-primary-900/20 dark:text-primary-200">{{ t('admin.accounts.batchTestInProgress', 'Operation in progress, please wait…') }}</div>
           <!-- 成功组操作 -->
           <div v-if="successCount > 0" class="rounded-lg border border-green-200 bg-green-50 p-3 dark:border-green-800 dark:bg-green-900/20">
             <div class="mb-2 flex items-center justify-between text-sm">

@@ -69,7 +69,7 @@
     <!-- Plan Edit Dialog -->
     <PlanEditDialog :show="showPlanDialog" :plan="editingPlan" :groups="groups" @close="showPlanDialog = false" @saved="loadPlans" />
 
-    <ConfirmDialog :show="showDeletePlanDialog" :title="t('payment.admin.deletePlan')" :message="t('payment.admin.deletePlanConfirm')" :confirm-text="t('common.delete')" danger @confirm="handleDeletePlan" @cancel="showDeletePlanDialog = false" />
+    <ConfirmDialog :show="showDeletePlanDialog" :title="t('payment.admin.deletePlan')" :message="t('payment.admin.deletePlanConfirm')" :confirm-text="t('common.delete')" danger :loading="isDeletingPlan" @confirm="handleDeletePlan" @cancel="showDeletePlanDialog = false" />
   </AppLayout>
 </template>
 
@@ -126,6 +126,7 @@ const showPlanDialog = ref(false)
 const showDeletePlanDialog = ref(false)
 const editingPlan = ref<SubscriptionPlan | null>(null)
 const deletingPlanId = ref<number | null>(null)
+const isDeletingPlan = ref(false)
 
 const planColumns = computed((): Column[] => [
   { key: 'id', label: 'ID' },
@@ -172,9 +173,11 @@ async function toggleForSale(plan: SubscriptionPlan) {
 
 function confirmDeletePlan(plan: SubscriptionPlan) { deletingPlanId.value = plan.id; showDeletePlanDialog.value = true }
 async function handleDeletePlan() {
-  if (!deletingPlanId.value) return
+  if (!deletingPlanId.value || isDeletingPlan.value) return
+  isDeletingPlan.value = true
   try { await adminPaymentAPI.deletePlan(deletingPlanId.value); appStore.showSuccess(t('common.deleted')); showDeletePlanDialog.value = false; loadPlans() }
   catch (err: unknown) { appStore.showError(extractI18nErrorMessage(err, t, 'payment.errors', t('common.error'))) }
+  finally { isDeletingPlan.value = false }
 }
 
 // ==================== Lifecycle ====================

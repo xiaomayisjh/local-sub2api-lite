@@ -22,9 +22,9 @@ mkdir -p "$ROOT/dist"
 (cd "$ROOT/desktop" && go mod tidy)
 
 if [ "$debug_build" = "1" ]; then
-  OUT_NAME="local-sub2api-lite-debug"
+  OUT_NAME="ANT-Sub2API-Local-debug"
 else
-  OUT_NAME="local-sub2api-lite"
+  OUT_NAME="ANT-Sub2API-Local"
 fi
 OUT="$ROOT/dist/$OUT_NAME"
 if [ "$(go env GOOS)" = "windows" ]; then

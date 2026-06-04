@@ -30,7 +30,7 @@
               <Icon name="x" size="sm" />
               {{ t('payment.orders.cancel') }}
             </button>
-            <button v-if="row.status === 'FAILED'" @click="handleRetryOrder(row)" class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/20">
+            <button v-if="row.status === 'FAILED'" @click="handleRetryOrder(row)" :disabled="retrySubmitting" class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-blue-600 hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed dark:text-blue-400 dark:hover:bg-blue-900/20">
               <Icon name="refresh" size="sm" />
               {{ t('payment.admin.retry') }}
             </button>
@@ -108,6 +108,18 @@
     </BaseDialog>
 
     <AdminRefundDialog :show="showRefundDialog" :order="selectedOrder" :submitting="refundSubmitting" @confirm="handleRefund" @cancel="showRefundDialog = false" />
+
+    <ConfirmDialog
+      :show="showCancelDialog"
+      :title="t('payment.admin.cancelOrderTitle', 'Cancel Order')"
+      :message="t('payment.admin.cancelOrderConfirm', { id: cancellingOrder?.id }, `Cancel order #${cancellingOrder?.id}? This action cannot be undone.`)"
+      :confirm-text="t('payment.orders.cancel', 'Cancel Order')"
+      :cancel-text="t('common.back', 'Back')"
+      :danger="true"
+      :loading="cancelSubmitting"
+      @confirm="confirmCancelOrder"
+      @cancel="showCancelDialog = false; cancellingOrder = null"
+    />
   </AppLayout>
 </template>
 
@@ -122,6 +134,7 @@ import type { PaymentOrder } from '@/types/payment'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
+import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Select from '@/components/common/Select.vue'
 import Icon from '@/components/icons/Icon.vue'
 import AdminRefundDialog from '@/components/admin/payment/AdminRefundDialog.vue'
@@ -148,6 +161,10 @@ const selectedOrder = ref<PaymentOrder | null>(null)
 const showDetailDialog = ref(false)
 const showRefundDialog = ref(false)
 const refundSubmitting = ref(false)
+const retrySubmitting = ref(false)
+const showCancelDialog = ref(false)
+const cancellingOrder = ref<PaymentOrder | null>(null)
+const cancelSubmitting = ref(false)
 const orderAuditLogs = ref<AuditLog[]>([])
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -214,13 +231,31 @@ async function showOrderDetail(order: PaymentOrder) {
 }
 
 async function handleCancelOrder(order: PaymentOrder) {
-  try { await adminPaymentAPI.cancelOrder(order.id); appStore.showSuccess(t('payment.admin.orderCancelled')); loadOrders() }
+  cancellingOrder.value = order
+  showCancelDialog.value = true
+}
+
+async function confirmCancelOrder() {
+  const order = cancellingOrder.value
+  if (!order || cancelSubmitting.value) return
+  cancelSubmitting.value = true
+  try {
+    await adminPaymentAPI.cancelOrder(order.id)
+    appStore.showSuccess(t('payment.admin.orderCancelled'))
+    showCancelDialog.value = false
+    cancellingOrder.value = null
+    loadOrders()
+  }
   catch (err: unknown) { appStore.showError(extractI18nErrorMessage(err, t, 'payment.errors', t('common.error'))) }
+  finally { cancelSubmitting.value = false }
 }
 
 async function handleRetryOrder(order: PaymentOrder) {
+  if (retrySubmitting.value) return
+  retrySubmitting.value = true
   try { await adminPaymentAPI.retryRecharge(order.id); appStore.showSuccess(t('payment.admin.retrySuccess')); loadOrders() }
   catch (err: unknown) { appStore.showError(extractI18nErrorMessage(err, t, 'payment.errors', t('common.error'))) }
+  finally { retrySubmitting.value = false }
 }
 
 function openRefundDialog(order: PaymentOrder) { selectedOrder.value = order; showRefundDialog.value = true }

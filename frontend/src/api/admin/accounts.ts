@@ -559,9 +559,13 @@ export async function importData(payload: {
   data: AdminDataPayload
   skip_default_group_bind?: boolean
 }): Promise<AdminDataImportResult> {
+  // 大备份（数千账号、十几 MB）服务端逐条建号 + 判重，远超默认 30s。
+  // 这里放宽到 10 分钟，避免大文件导入被 axios 超时误报为 "Network error"。
   const { data } = await apiClient.post<AdminDataImportResult>('/admin/accounts/data', {
     data: payload.data,
     skip_default_group_bind: payload.skip_default_group_bind
+  }, {
+    timeout: 600000
   })
   return data
 }

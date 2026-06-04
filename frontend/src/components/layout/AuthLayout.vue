@@ -20,7 +20,7 @@
 
       <!-- Grid Pattern -->
       <div
-        class="absolute inset-0 bg-[linear-gradient(rgba(20,184,166,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(20,184,166,0.03)_1px,transparent_1px)] bg-[size:64px_64px]"
+        class="absolute inset-0 bg-[linear-gradient(rgba(193,95,60,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(193,95,60,0.03)_1px,transparent_1px)] bg-[size:64px_64px]"
       ></div>
     </div>
 
@@ -33,9 +33,9 @@
           <div
             class="mb-4 inline-flex h-16 w-16 items-center justify-center overflow-hidden rounded-2xl shadow-lg shadow-primary-500/30"
           >
-            <img :src="siteLogo || '/logo.png'" alt="Logo" class="h-full w-full object-contain" />
+            <img :src="siteLogo || '/logo.svg'" alt="Logo" class="h-full w-full object-contain" />
           </div>
-          <h1 class="text-gradient mb-2 text-3xl font-bold">
+          <h1 class="text-gradient mb-2 font-serif text-3xl font-bold tracking-tight">
             {{ siteName }}
           </h1>
           <p class="text-sm text-gray-500 dark:text-dark-400">
@@ -69,7 +69,7 @@ import { sanitizeUrl } from '@/utils/url'
 
 const appStore = useAppStore()
 
-const siteName = computed(() => appStore.siteName || 'Sub2API')
+const siteName = computed(() => appStore.siteName || 'ANT-Sub2API-Local')
 const siteLogo = computed(() => sanitizeUrl(appStore.siteLogo || '', { allowRelative: true, allowDataUrl: true }))
 const siteSubtitle = computed(() => appStore.cachedPublicSettings?.site_subtitle || 'Subscription to API Conversion Platform')
 const settingsLoaded = computed(() => appStore.publicSettingsLoaded)
