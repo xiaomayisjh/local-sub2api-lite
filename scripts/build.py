@@ -35,6 +35,112 @@ DESKTOP_DIR = ROOT / "desktop"
 DIST_DIR = ROOT / "dist"
 BASE_NAME = "ANT-Sub2API-Local"
 
+# desktop/main.go 通过 //go:embed all:frontend/dist 嵌入一个启动加载页。
+# 该目录被 .gitignore 忽略(dist/)，全新检出时不存在，需在构建前确保其存在，
+# 否则 go build 会报 "pattern all:frontend/dist: no matching files found"。
+DESKTOP_LOADER = DESKTOP_DIR / "frontend" / "dist" / "index.html"
+
+# 启动等待页：含 id="status" 元素(desktop/app.go 的 navigateToWebUI 依赖它判断
+# 当前是否为加载页，从而跳转到本地服务的真实 UI)。内置 fallback 轮询脚本：
+# 读取 ?port= 参数、轮询健康接口、就绪后跳转、超时报错——作为 Go 端跳转的双保险。
+# 内容与本地 desktop/frontend/dist/index.html 保持一致。
+LOADER_HTML = """<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ANT-Sub2API-Local</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        background: #faf9f5;
+        color: #262420;
+      }
+      .wrap {
+        min-height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        padding: 24px;
+        text-align: center;
+      }
+      .spinner {
+        width: 40px;
+        height: 40px;
+        border: 3px solid rgba(193, 95, 60, 0.2);
+        border-top-color: #c15f3c;
+        border-radius: 50%;
+        animation: spin 0.9s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      h1 {
+        margin: 0;
+        font-size: 1.125rem;
+        font-weight: 600;
+        font-family: Georgia, "Songti SC", serif;
+      }
+      p {
+        margin: 0;
+        font-size: 0.875rem;
+        color: #6b6557;
+        max-width: 28rem;
+        line-height: 1.5;
+      }
+      .err { color: #b3402b; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="spinner" aria-hidden="true"></div>
+      <h1>正在启动 ANT-Sub2API-Local…</h1>
+      <p id="status">正在连接本地服务</p>
+    </div>
+    <script>
+      // Fallback: if Go-side navigation does not run, poll default port.
+      (function () {
+        var port = 8080;
+        var params = new URLSearchParams(window.location.search);
+        if (params.get("port")) {
+          port = parseInt(params.get("port"), 10) || port;
+        }
+        var base = "http://127.0.0.1:" + port;
+        var target = base + "/login?redirect=" + encodeURIComponent("/admin/dashboard");
+        var status = document.getElementById("status");
+        var attempts = 0;
+        var maxAttempts = 300;
+
+        function tick() {
+          attempts += 1;
+          fetch(base + "/api/v1/settings/public", { cache: "no-store" })
+            .then(function (res) {
+              if (res.ok) {
+                window.location.replace(target);
+                return;
+              }
+              throw new Error("status " + res.status);
+            })
+            .catch(function () {
+              if (attempts >= maxAttempts) {
+                status.textContent = "本地服务启动超时，请重启应用或检查端口 " + port;
+                status.className = "err";
+                return;
+              }
+              setTimeout(tick, 200);
+            });
+        }
+
+        setTimeout(tick, 300);
+      })();
+    </script>
+  </body>
+</html>
+"""
+
 # Go 风格 OS 名称到可执行后缀的映射(仅 windows 需要 .exe)。
 EXE_SUFFIX = ".exe"
 
@@ -98,6 +204,16 @@ def build_frontend() -> None:
     pnpm = resolve_tool("pnpm")
     run([pnpm, "install"], cwd=FRONTEND_DIR)
     run([pnpm, "run", "build"], cwd=FRONTEND_DIR)
+
+
+def ensure_desktop_loader() -> None:
+    """确保 desktop 启动加载页存在(供 //go:embed 嵌入); 缺失则生成, 已有则保留。"""
+    if DESKTOP_LOADER.exists():
+        log(f"desktop 启动页已存在: {DESKTOP_LOADER.relative_to(ROOT)}")
+        return
+    log(f"生成缺失的 desktop 启动加载页: {DESKTOP_LOADER.relative_to(ROOT)}")
+    DESKTOP_LOADER.parent.mkdir(parents=True, exist_ok=True)
+    DESKTOP_LOADER.write_text(LOADER_HTML, encoding="utf-8")
 
 
 def output_path(
@@ -206,6 +322,9 @@ def main() -> None:
         log("跳过前端构建 (--skip-frontend)")
     else:
         build_frontend()
+
+    # desktop 的 //go:embed all:frontend/dist 依赖此启动页, 必须在 go build 前就位。
+    ensure_desktop_loader()
 
     log("同步 desktop 模块依赖 (go mod tidy) ...")
     run([go, "mod", "tidy"], cwd=DESKTOP_DIR)
