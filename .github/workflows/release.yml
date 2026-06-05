@@ -1,0 +1,302 @@
+name: Build & Release
+
+# 手动触发：在 GitHub Actions 页面点 "Run workflow"，选择参数即可。
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "发布版本 / tag（留空则读取 backend/cmd/server/VERSION）"
+        required: false
+        default: ""
+      build_type:
+        description: "构建版本"
+        type: choice
+        required: true
+        default: release
+        options:
+          - release
+          - debug
+          - both
+      prerelease:
+        description: "标记为预发布版本"
+        type: boolean
+        required: false
+        default: false
+      overwrite:
+        description: "若同名 Release/tag 已存在则覆盖（否则中止）"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+# 同一 tag 的发布串行执行，且发布过程不可中途取消，避免产物/Release 不一致。
+concurrency:
+  group: release-${{ github.event.inputs.version || github.ref }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION_FILE: desktop/go.mod
+  NODE_VERSION: "20"
+  PNPM_VERSION: "9"
+
+jobs:
+  # ---- 解析并校验版本号 + tag 冲突检查 ----
+  meta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve & validate version
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          v="${{ github.event.inputs.version }}"
+          if [ -z "$v" ]; then
+            if [ ! -f backend/cmd/server/VERSION ]; then
+              echo "::error::未提供 version 且找不到 backend/cmd/server/VERSION"; exit 1
+            fi
+            v="$(tr -d '[:space:]' < backend/cmd/server/VERSION)"
+          fi
+          v="${v#v}"  # 去掉可能的前导 v
+          if [ -z "$v" ]; then
+            echo "::error::解析到的版本号为空"; exit 1
+          fi
+          # 校验 semver 主体（允许 -beta / +build 等后缀）
+          if ! echo "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$'; then
+            echo "::error::版本号格式非法: '$v'（期望形如 1.2.3 / 1.2.3-beta.1）"; exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "tag=v$v" >> "$GITHUB_OUTPUT"
+          echo "解析版本: $v (tag: v$v)"
+
+      - name: Check tag/release conflict
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.ver.outputs.tag }}"
+          OVERWRITE="${{ github.event.inputs.overwrite }}"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [ "$OVERWRITE" = "true" ]; then
+              echo "::warning::Release $TAG 已存在，将在发布阶段覆盖"
+            else
+              echo "::error::Release $TAG 已存在。如需覆盖请勾选 overwrite 后重跑"; exit 1
+            fi
+          else
+            echo "tag $TAG 可用"
+          fi
+
+  # ---- 三平台并行构建桌面端 ----
+  build:
+    needs: meta
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: windows-amd64
+            cgo: false
+            extra_tags: ""
+          - os: ubuntu-latest
+            label: linux-amd64
+            cgo: true
+            extra_tags: "webkit2_41"
+          - os: macos-latest
+            label: darwin-arm64
+            cgo: true
+            extra_tags: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache-dependency-path: |
+            backend/go.sum
+            desktop/go.sum
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Linux 的 Wails 桌面端需要 GTK + WebKit2GTK 4.1（对应 webkit2_41 tag）
+      - name: Install Linux WebKit deps
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          retry() {
+            local n=1 max=3; while true; do "$@" && break || {
+              [ $n -lt $max ] && { echo "失败，第 $n 次重试..."; sleep 15; n=$((n+1)); } || { echo "::error::命令重试 $max 次后仍失败: $*"; return 1; }
+            }; done; }
+          retry sudo apt-get update
+          retry sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config
+
+      # 前端依赖与构建独立成步，便于失败重试与定位日志
+      - name: Install frontend deps
+        shell: bash
+        working-directory: frontend
+        run: |
+          set -euo pipefail
+          retry() {
+            local n=1 max=3; while true; do "$@" && break || {
+              [ $n -lt $max ] && { echo "失败，第 $n 次重试..."; sleep 15; n=$((n+1)); } || { echo "::error::命令重试 $max 次后仍失败: $*"; return 1; }
+            }; done; }
+          retry pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        shell: bash
+        working-directory: frontend
+        run: |
+          set -euo pipefail
+          retry() {
+            local n=1 max=3; while true; do "$@" && break || {
+              [ $n -lt $max ] && { echo "失败，第 $n 次重试..."; sleep 15; n=$((n+1)); } || { echo "::error::命令重试 $max 次后仍失败: $*"; return 1; }
+            }; done; }
+          retry pnpm run build
+
+      - name: Download Go modules
+        shell: bash
+        working-directory: desktop
+        run: |
+          set -euo pipefail
+          retry() {
+            local n=1 max=3; while true; do "$@" && break || {
+              [ $n -lt $max ] && { echo "失败，第 $n 次重试..."; sleep 15; n=$((n+1)); } || { echo "::error::命令重试 $max 次后仍失败: $*"; return 1; }
+            }; done; }
+          retry go mod download
+
+      - name: Build desktop binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 前端已构建、模块已下载，跳过 build.py 内部的前端步骤
+          ARGS="--label ${{ matrix.label }} --skip-frontend"
+          case "${{ github.event.inputs.build_type }}" in
+            release) ARGS="$ARGS --release-only" ;;
+            debug)   ARGS="$ARGS --debug-only" ;;
+            both)    : ;;
+            *) echo "::error::未知 build_type"; exit 1 ;;
+          esac
+          if [ "${{ matrix.cgo }}" = "true" ]; then ARGS="$ARGS --cgo"; fi
+          if [ -n "${{ matrix.extra_tags }}" ]; then ARGS="$ARGS --extra-tags ${{ matrix.extra_tags }}"; fi
+          echo "build.py $ARGS"
+          python scripts/build.py $ARGS
+
+      - name: Verify artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          count=$(find dist -maxdepth 1 -type f -name 'ANT-Sub2API-Local*' | wc -l | tr -d ' ')
+          if [ "$count" -eq 0 ]; then
+            echo "::error::dist 下未找到构建产物"; ls -la dist || true; exit 1
+          fi
+          echo "找到 $count 个产物:"; ls -la dist
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.label }}
+          path: |
+            dist/ANT-Sub2API-Local*
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---- 打包源码（基于当前提交，排除 .gitignore 内容）----
+  source:
+    needs: meta
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Archive source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          PREFIX="local-sub2api-lite-${{ needs.meta.outputs.version }}"
+          OUT="dist/${PREFIX}-source.zip"
+          git archive --format=zip --prefix="${PREFIX}/" -o "$OUT" HEAD
+          if [ ! -s "$OUT" ]; then
+            echo "::error::源码压缩包生成失败或为空: $OUT"; exit 1
+          fi
+          echo "源码包: $OUT ($(du -h "$OUT" | cut -f1))"
+      - name: Upload source artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-archive
+          path: dist/*-source.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---- 汇总产物并发布到 Release ----
+  release:
+    needs: [meta, build, source]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Collect & verify assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          find artifacts -type f -exec cp -n {} release-assets/ \;
+          count=$(find release-assets -type f | wc -l | tr -d ' ')
+          if [ "$count" -eq 0 ]; then
+            echo "::error::没有可发布的产物"; exit 1
+          fi
+          echo "==> 待发布 $count 个文件:"; ls -la release-assets
+
+      # overwrite=true 时先删除旧 Release（保留/重置 tag），确保干净重建
+      - name: Remove existing release (overwrite)
+        if: ${{ github.event.inputs.overwrite == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.meta.outputs.tag }}"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "删除已存在的 Release $TAG ..."
+            gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.meta.outputs.tag }}
+          name: ${{ needs.meta.outputs.tag }}
+          prerelease: ${{ github.event.inputs.prerelease }}
+          generate_release_notes: true
+          files: release-assets/*
+          fail_on_unmatched_files: true
